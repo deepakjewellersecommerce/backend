@@ -6,6 +6,7 @@ const {
   requireUserLogin,
   requireAdminLogin,
 } = require("../middlewares/requireLogin");
+const { validateObjectId } = require("../middlewares/validation");
 const validate = require("../validation/validate");
 const { upsertCartSchema, postCartItem, deleteCartItem } = require("../validation/user-cart");
 
@@ -52,6 +53,7 @@ router.post(
 router.delete(
   "/user/wishlist/:productId",
   requireUserLogin,
+  validateObjectId('productId'),
   wishlistController.removeFromWishlist
 );
 

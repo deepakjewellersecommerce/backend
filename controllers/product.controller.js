@@ -190,6 +190,9 @@ module.exports.uploadProductBulk = catchAsync(async (req, res) => {
 
 module.exports.editProduct_post = catchAsync(async (req, res) => {
   const { productId } = req.params;
+  if (!mongoose.isValidObjectId(productId)) {
+    return errorRes(res, 400, "Invalid product id");
+  }
   const { product: productData } = req.body;
 
   if (!productData) return errorRes(res, 400, "Product details are required.");
@@ -262,6 +265,10 @@ module.exports.allProducts_get = catchAsync(async (req, res) => {
 
 module.exports.getParticularProduct_get = catchAsync(async (req, res) => {
   const { productId } = req.params;
+  // Defensive validation: ensure productId is a valid ObjectId to avoid CastError if a string like 'low-stock' is passed
+  if (!mongoose.isValidObjectId(productId)) {
+    return errorRes(res, 400, 'Invalid product id');
+  }
   const isAdmin = req.user?.role !== "admin" ? false : true;
   const filter = { _id: productId };
   if (!isAdmin) {
@@ -291,6 +298,9 @@ module.exports.getParticularProduct_get = catchAsync(async (req, res) => {
 
 module.exports.deleteProduct_delete = async (req, res) => {
   const { productId } = req.params;
+  if (!mongoose.isValidObjectId(productId)) {
+    return errorRes(res, 400, "Invalid product id");
+  }
   try {
     const findProduct = await Product.findById({ _id: productId });
     if (findProduct) {
@@ -515,6 +525,9 @@ module.exports.getFeaturedProducts = async (req, res) => {
 module.exports.updateProductPricing = catchAsync(async (req, res) => {
   try {
     const { productId } = req.params;
+    if (!mongoose.isValidObjectId(productId)) {
+      return errorRes(res, 400, "Invalid product id");
+    }
     
     const product = await Product.findById(productId);
     if (!product) {

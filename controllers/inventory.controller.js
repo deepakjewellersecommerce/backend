@@ -121,9 +121,23 @@ module.exports.getLowStockItems = catchAsync(async (req, res) => {
       cacheService.TTL.SHORT
     );
 
+    // Transform inventory items into a flat response shape expected by admin UI
+    const flattenedItems = lowStockItems.map(inv => ({
+      _id: inv.product?._id || inv._id,
+      productId: inv.product?._id || null,
+      inventoryId: inv._id,
+      productTitle: inv.product?.productTitle || "",
+      productImageUrl: inv.product?.productImageUrl || (inv.product?.productImageUrl || ""),
+      skuNo: inv.product?.skuNo || "",
+      stock: inv.availableStock || inv.currentStock || 0,
+      variantName: inv.variant?.varientName || null,
+      location: inv.location || {},
+      reorderPoint: inv.reorderPoint || 0
+    }));
+
     successRes(res, {
-      items: lowStockItems,
-      count: lowStockItems.length,
+      items: flattenedItems,
+      count: flattenedItems.length,
       message: "Low stock items retrieved successfully"
     });
   } catch (error) {
