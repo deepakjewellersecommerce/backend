@@ -634,13 +634,10 @@ module.exports.removePricingConfig = catchAsync(async (req, res) => {
 module.exports.freezeComponent = catchAsync(async (req, res) => {
   try {
     const { id, componentKey } = req.params;
-    const { reason } = req.body;
+    const { reason, sampleType = "median", productId, netWeight, grossWeight, metalRate } = req.body || {};
+    const isPreview = req.query.preview === "true" || req.query.preview === true;
     const adminName = req.admin?.name || "Admin";
     const adminId = req.admin?._id;
-
-    if (!reason) {
-      return errorRes(res, 400, "Freeze reason is required for subcategory-level freeze");
-    }
 
     const subcategory = await Subcategory.findById(id).populate("materialId");
     if (!subcategory) {
@@ -651,10 +648,10 @@ module.exports.freezeComponent = catchAsync(async (req, res) => {
       return errorRes(res, 400, "Subcategory does not have its own pricing config");
     }
 
-    // Get current metal rate
-    const metalPrice = await MetalPrice.getCurrentPrice(
-      subcategory.materialId.metalType
-    );
+    // Get current metal rate (can be overridden by manual metalRate in payload)
+    const effectiveMetalPrice = metalRate
+      ? { pricePerGram: parseFloat(metalRate) }
+      : await MetalPrice.getCurrentPrice(subcategory.materialId.metalType);
 
     const pricingConfig = await SubcategoryPricing.findById(
       subcategory.pricingConfigId
@@ -664,41 +661,196 @@ module.exports.freezeComponent = catchAsync(async (req, res) => {
       return errorRes(res, 404, "Pricing config not found");
     }
 
-    // Calculate frozen value
+    // Find component
     const component = pricingConfig.components.find(
       (c) => c.componentKey === componentKey
     );
 
     if (!component) {
-      return errorRes(res, 404, `Component "${componentKey}" not found`);
+      return errorRes(res, 404, `Component \"${componentKey}\" not found`);
     }
 
-    // Calculate current value to freeze
-    const frozenValue = pricingCalculationService.calculateComponentValue(
-      component,
-      {
-        grossWeight: 10, // Sample values for calculation
-        netWeight: 9.5,
-        metalRate: metalPrice.pricePerGram,
-        metalCost: 9.5 * metalPrice.pricePerGram,
-        subtotal: 0
-      }
-    );
+    // Build list of inheriting subcategory IDs (self + descendants that do not have their own config)
+    const inheritingSubcategories = await Subcategory.find({
+      $or: [
+        { _id: id },
+        { ancestorPath: id, hasPricingConfig: false }
+      ]
+    }).select('_id');
 
+    const subcategoryIds = inheritingSubcategories.map((s) => s._id);
+
+    const Product = mongoose.model('Product');
+
+    // Query Affected Products (only those using SUBCATEGORY_DYNAMIC)
+    const affectedFilter = {
+      subcategoryId: { $in: subcategoryIds },
+      pricingMode: 'SUBCATEGORY_DYNAMIC',
+      isActive: true
+    };
+
+    const affectedCount = await Product.countDocuments(affectedFilter);
+
+    // Determine sample context used to compute frozen value
+    let contextSample = {};
+
+    if (sampleType === 'product') {
+      if (!productId) return errorRes(res, 400, 'productId is required when sampleType=product');
+      const product = await Product.findById(productId);
+      if (!product) return errorRes(res, 404, 'Product for sample not found');
+      contextSample.grossWeight = product.grossWeight;
+      contextSample.netWeight = product.netWeight;
+      contextSample.metalRate = effectiveMetalPrice.pricePerGram;
+    } else if (sampleType === 'manual') {
+      if (typeof netWeight !== 'number' || typeof grossWeight !== 'number') {
+        return errorRes(res, 400, 'manual sample requires netWeight and grossWeight');
+      }
+      contextSample.grossWeight = grossWeight;
+      contextSample.netWeight = netWeight;
+      contextSample.metalRate = effectiveMetalPrice.pricePerGram;
+    } else {
+      // median: derive median netWeight/grossWeight from a sample of products
+      const sampleProducts = await Product.find(affectedFilter).limit(50).select('grossWeight netWeight metalType');
+      if (sampleProducts.length > 0) {
+        const netWeights = sampleProducts.map(p => p.netWeight).filter(Boolean).sort((a,b)=>a-b);
+        const grossWeights = sampleProducts.map(p => p.grossWeight).filter(Boolean).sort((a,b)=>a-b);
+        const median = (arr) => arr.length ? arr[Math.floor(arr.length/2)] : null;
+        contextSample.netWeight = median(netWeights) || 0;
+        contextSample.grossWeight = median(grossWeights) || 0;
+        contextSample.metalRate = effectiveMetalPrice.pricePerGram;
+      } else {
+        // fallback defaults
+        contextSample.netWeight = 1;
+        contextSample.grossWeight = 1;
+        contextSample.metalRate = effectiveMetalPrice.pricePerGram;
+      }
+    }
+
+    // Compute frozen value using pricingCalculationService
+    const frozenValue = pricingCalculationService.calculateComponentValue(component, {
+      grossWeight: contextSample.grossWeight,
+      netWeight: contextSample.netWeight,
+      metalRate: contextSample.metalRate,
+      metalCost: contextSample.netWeight * contextSample.metalRate,
+      subtotal: 0
+    });
+
+    // If preview, build sample product previews and return without persisting
+    if (isPreview) {
+      const sampleProducts = await Product.find(affectedFilter).limit(10);
+      const previews = [];
+      for (const product of sampleProducts) {
+        const context = {
+          grossWeight: product.grossWeight,
+          netWeight: product.netWeight,
+          metalRate: effectiveMetalPrice.pricePerGram
+        };
+
+        // Current breakdown
+        const currentPricingConfig = await this.getPricingConfig ? await this.getPricingConfig() : pricingConfig; // fallback
+        const currentBreakdown = pricingCalculationService.calculateBreakdown(pricingConfig, context);
+        const currentTotal = currentBreakdown.subtotal + pricingCalculationService.calculateGemstoneCost(product.gemstones || []);
+
+        // Simulate freeze by cloning pricingConfig and marking component frozen
+        const clonedConfig = JSON.parse(JSON.stringify(pricingConfig.toObject ? pricingConfig.toObject() : pricingConfig));
+        const targetComp = clonedConfig.components.find(c => c.componentKey === componentKey);
+        if (targetComp) {
+          targetComp.isFrozen = true;
+          targetComp.frozenValue = frozenValue;
+        }
+
+        const newBreakdown = pricingCalculationService.calculateBreakdown(clonedConfig, context);
+        const newTotal = newBreakdown.subtotal + pricingCalculationService.calculateGemstoneCost(product.gemstones || []);
+
+        previews.push({
+          productId: product._id,
+          productTitle: product.productTitle,
+          oldPrice: Math.round(currentTotal * 100) / 100,
+          newPrice: Math.round(newTotal * 100) / 100,
+          delta: Math.round((newTotal - currentTotal) * 100) / 100,
+          deltaPercent: currentTotal > 0 ? Math.round(((newTotal - currentTotal) / currentTotal) * 10000) / 100 : 0
+        });
+      }
+
+      return successRes(res, {
+        frozenValue: Math.round(frozenValue * 100) / 100,
+        metalRateUsed: contextSample.metalRate,
+        sampleProductPreviews: previews,
+        affectedCount,
+        message: 'Preview computed successfully'
+      });
+    }
+
+    // For apply: reason is required
+    if (!reason) {
+      return errorRes(res, 400, "Freeze reason is required for subcategory-level freeze");
+    }
+
+    // Persist freeze on pricing config
     await pricingConfig.freezeComponent(
       componentKey,
       frozenValue,
-      metalPrice.pricePerGram,
+      contextSample.metalRate,
       reason,
       adminId,
       adminName
     );
 
-    successRes(res, {
+    // Update affected count
+    await SubcategoryPricing.updateAffectedCount(id);
+
+    // Recalculate small sets synchronously, otherwise spawn background task (basic in-process)
+    const A_SYNC_THRESHOLD = 200;
+    if (affectedCount <= A_SYNC_THRESHOLD) {
+      const affectedProducts = await Product.find(affectedFilter).limit(A_SYNC_THRESHOLD);
+      const failures = [];
+      for (const prod of affectedProducts) {
+        try {
+          await prod.calculatePrice();
+        } catch (err) {
+          failures.push({ productId: prod._id, error: err.message });
+        }
+      }
+
+      return successRes(res, {
+        component: pricingConfig.components.find((c) => c.componentKey === componentKey),
+        frozenValue: Math.round(frozenValue * 100) / 100,
+        metalRateAtFreeze: contextSample.metalRate,
+        affectedCount,
+        recalculation: {
+          mode: 'sync',
+          failures
+        },
+        message: `Component \"${componentKey}\" frozen successfully and ${affectedProducts.length} products recalculated`
+      });
+    }
+
+    // For larger sets, queue simple in-process background recalculation
+    (async function backgroundRecalc() {
+      try {
+        const cursor = Product.find(affectedFilter).cursor();
+        for await (const prod of cursor) {
+          try {
+            await prod.calculatePrice();
+          } catch (err) {
+            console.error('Recalc failed for product', prod._id, err.message);
+          }
+        }
+        console.log('Background recalculation completed for freeze', componentKey, 'subcategory', id);
+      } catch (err) {
+        console.error('Background recalc error:', err);
+      }
+    })();
+
+    return successRes(res, {
       component: pricingConfig.components.find((c) => c.componentKey === componentKey),
-      frozenValue,
-      metalRateAtFreeze: metalPrice.pricePerGram,
-      message: `Component "${componentKey}" frozen successfully`
+      frozenValue: Math.round(frozenValue * 100) / 100,
+      metalRateAtFreeze: contextSample.metalRate,
+      affectedCount,
+      recalculation: {
+        mode: 'background'
+      },
+      message: `Component \"${componentKey}\" frozen successfully. Recalculation queued.`
     });
   } catch (error) {
     console.error("Error freezing component:", error);
