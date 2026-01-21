@@ -1,5 +1,5 @@
 const GuestOrder = require("../models/guest-order.model");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const silverPriceService = require("../services/silver-price.service");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");

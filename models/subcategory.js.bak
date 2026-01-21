@@ -85,5 +85,7 @@ subcategorySchema.pre('save', function(next) {
   next();
 });
 
-const Subcategory = mongoose.model("Subcategory", subcategorySchema);
-module.exports = Subcategory;
+// const Subcategory = mongoose.model("Subcategory", subcategorySchema);
+// module.exports = Subcategory;
+
+// MOVED TO subcategory.model.js

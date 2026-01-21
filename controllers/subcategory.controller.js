@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const Subcategory = require("../models/subcategory");
 const ProductCategory = require("../models/product_category.model");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const { errorRes, successRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
 const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
@@ -246,12 +246,12 @@ module.exports.getSubcategoryProducts = catchAsync(async (req, res) => {
     return errorRes(res, 404, "Subcategory not found");
   }
 
-  const filter = { subcategory: id, isActive: true };
+  const filter = { subcategoryId: id, isActive: true };
   
   const products = await buildPaginatedSortedFilteredQuery(
     Product.find(filter)
-      .populate('category', 'name slug')
-      .populate('subcategory', 'name slug')
+      .populate('categoryId', 'name slug')
+      .populate('subcategoryId', 'name slug')
       .sort({ createdAt: -1 }),
     req,
     Product

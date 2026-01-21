@@ -384,7 +384,7 @@ module.exports.getUploadHistory = catchAsync(async (req, res) => {
     const recentProducts = await Product.find()
       .sort({ createdAt: -1 })
       .limit(50)
-      .populate("category", "name")
+      .populate("categoryId", "name")
       .populate("brand", "brand_name")
       .select("productTitle skuNo createdAt isActive silverWeight");
 
@@ -393,7 +393,7 @@ module.exports.getUploadHistory = catchAsync(async (req, res) => {
         id: product._id,
         productTitle: product.productTitle,
         skuNo: product.skuNo,
-        category: product.category?.name,
+        category: product.categoryId?.name,
         brand: product.brand?.brand_name,
         silverWeight: product.silverWeight,
         isActive: product.isActive,

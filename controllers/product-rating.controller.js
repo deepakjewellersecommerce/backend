@@ -24,7 +24,6 @@ module.exports.allProductRating_get = catchAsync(async (req, res) => {
 module.exports.singleProductRating_get = catchAsync(async (req, res) => {
   const { id } = req.params;
   const productRating = await ProductRating.findById(id)
-    .populate("category")
     .populate("product");
   res.status(200).json(productRating);
 });

@@ -10,7 +10,7 @@ const shortid = require("shortid");
 const { deleteFromCloudinary } = require("../middlewares/Cloudinary");
 const catchAsync = require("../utility/catch-async");
 const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const getAllNestedSubcategories = require("../utility/utils");
 const ProductVariant = require("../models/product_varient");
 const { Product_Color } = require("../models/product_color.model");
@@ -242,15 +242,16 @@ module.exports.allProducts_get = catchAsync(async (req, res) => {
   }
 
   if (categoryId && mongoose.isValidObjectId(categoryId)) {
-    const categories = await getAllNestedSubcategories(categoryId);
-    categories.push(categoryId);
-    filter.category = { $in: categories };
+    const nested = await getAllNestedSubcategories(categoryId);
+    const categoryIds = nested.map((c) => c._id.toString());
+    categoryIds.push(categoryId);
+    filter.categoryId = { $in: categoryIds };
   }
 
   const products = await buildPaginatedSortedFilteredQuery(
     Product.find(filter)
       .sort("-createdAt")
-      .populate("category", "_id name description displayImage"),
+      .populate("categoryId", "_id name description displayImage"),
     req,
     Product
   );
@@ -275,7 +276,7 @@ module.exports.getParticularProduct_get = catchAsync(async (req, res) => {
     filter.isActive = true;
   }
   const productPromise = Product.find(filter).populate(
-    "category",
+    "categoryId",
     "_id name description displayImage"
   );
   const variantPromise = ProductVariant.find(filter).populate(
@@ -396,7 +397,7 @@ module.exports.randomProducts_get = async (req, res) => {
   }
 
   Product.find()
-    .populate("category color")
+    .populate("categoryId color")
     .limit(limit)
     .then((products) => successRes(res, { products }))
     .catch((err) => internalServerError(res, err));

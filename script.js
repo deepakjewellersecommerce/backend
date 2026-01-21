@@ -1,5 +1,5 @@
 const { default: mongoose } = require("mongoose");
-const ProductImage = require("./models/product.model");
+const { Product } = require("./models/product.model");
 const { ObjectId } = require("mongodb");
 const Constant = require("./models/constant.model");
 

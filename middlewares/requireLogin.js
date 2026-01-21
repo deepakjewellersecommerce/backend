@@ -7,7 +7,17 @@ const JWT_SECRET_ADMIN = process.env.JWT_SECRET_ADMIN;
 const JWT_SECRET_USER = process.env.JWT_SECRET_USER;
 
 module.exports.requireAdminLogin = (req, res, next) => {
-  const token = req.cookies.admin_token;
+  let token = req.cookies.admin_token;
+
+  // Also check Authorization header if cookie not present
+  if (!token && req.headers.authorization) {
+    const authHeader = req.headers.authorization;
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    }
+  }
+
+  if (!token) return errorRes(res, 401, "Unauthorized access.");
 
   jwt.verify(token, JWT_SECRET_ADMIN, (err, payload) => {
     if (err) return errorRes(res, 401, "Unauthorized access.");
