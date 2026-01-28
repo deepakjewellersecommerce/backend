@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useForm, useFieldArray, Controller } from 'react-hook-form'
+import { useForm, useFieldArray } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { 
@@ -56,7 +56,10 @@ const productFormSchema = z.object({
   // Gemstones
   gemstones: z.array(
     z.object({
-      name: z.string().min(1, 'Gemstone type is required'),
+      name: z.enum(['Diamond', 'Ruby', 'Emerald', 'Sapphire', 'Pearl', 'Topaz', 'Amethyst', 
+                    'Garnet', 'Opal', 'Turquoise', 'Aquamarine', 'Peridot', 'Citrine', 
+                    'Tanzanite', 'Jade', 'Coral', 'Moonstone', 'Alexandrite', 'Spinel', 
+                    'Zircon', 'Kunzite', 'Morganite', 'Tourmaline', 'Other']),
       customName: z.string().optional(),
       weight: z.number().positive('Weight must be positive').min(0.001).max(999.999),
       pricePerCarat: z.number().nonnegative('Price must be non-negative'),
@@ -114,12 +117,12 @@ const GEMSTONE_TYPES: GemstoneType[] = [
 
 export default function ProductFormV2({ initialData, onSubmit, isLoading = false }: ProductFormV2Props) {
   const [manualSlug, setManualSlug] = useState(false)
-  const [pricePreview, setPricePreview] = useState<PricePreviewResponse | null>(null)
-  const [subcategories, setSubcategories] = useState<Subcategory[]>([])
-  const [categories, setCategories] = useState<Category[]>([])
-  const [items, setItems] = useState<Item[]>([])
-  const [genders, setGenders] = useState<Gender[]>([])
-  const [materials, setMaterials] = useState<Material[]>([])
+  const [, /*setPricePreview*/] = useState<PricePreviewResponse | null>(null)
+  const [subcategories] = useState<Subcategory[]>([])
+  const [categories] = useState<Category[]>([])
+  const [items] = useState<Item[]>([])
+  const [genders] = useState<Gender[]>([])
+  const [materials] = useState<Material[]>([])
 
   const {
     register,
@@ -155,7 +158,6 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
 
   // Watch relevant fields
   const watchTitle = watch('productTitle')
-  const watchSlug = watch('productSlug')
   const watchSubcategoryId = watch('subcategoryId')
   const watchGrossWeight = watch('grossWeight')
   const watchNetWeight = watch('netWeight')
@@ -657,14 +659,14 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
             </div>
           )}
 
-          {pricePreview && (
+          {/*pricePreview && (
             <div className="bg-blue-50 p-4 rounded-md">
               <p className="text-sm font-medium text-blue-900 mb-2">Estimated Price:</p>
               <p className="text-3xl font-bold text-blue-600">
                 {formatCurrency(pricePreview.estimatedPrice)}
               </p>
             </div>
-          )}
+          )*/}
         </div>
       </div>
 

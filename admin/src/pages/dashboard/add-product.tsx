@@ -1,13 +1,13 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import ProductFormV2 from '../../components/products/product-form-v2'
-import type { ProductFormData, Product } from '../../types/product'
+import type { ProductFormData } from '../../types/product'
 
 export default function AddProduct() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [isLoading, setIsLoading] = useState(false)
-  const [initialData, setInitialData] = useState<Partial<ProductFormData>>()
+  const [initialData] = useState<Partial<ProductFormData>>()
   const isEditMode = !!id
 
   useEffect(() => {
@@ -15,6 +15,7 @@ export default function AddProduct() {
     if (id) {
       fetchProduct(id)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   const fetchProduct = async (productId: string) => {
