@@ -364,11 +364,10 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
       seoDescription
     } = req.body;
 
-    // Use findOneAndUpdate with version check for optimistic concurrency control
-    // This prevents race conditions during rapid edits
+    // Build update object with explicit undefined checks to allow falsy values
     const updateData = {};
-    if (name) updateData.name = name;
-    if (slug) updateData.slug = slug;
+    if (name !== undefined) updateData.name = name;
+    if (slug !== undefined) updateData.slug = slug;
     if (description !== undefined) updateData.description = description;
     if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
     if (isActive !== undefined) updateData.isActive = isActive;
@@ -377,6 +376,7 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
     if (seoDescription !== undefined) updateData.seoDescription = seoDescription;
 
     // Cannot change idAttribute, categoryId, or parentSubcategoryId (would break hierarchy)
+    // Use findByIdAndUpdate for atomic operation
     const subcategory = await Subcategory.findByIdAndUpdate(
       id,
       updateData,
@@ -398,8 +398,9 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating subcategory:", error);
-    if (error.name === 'VersionError') {
-      return errorRes(res, 409, "Subcategory was modified by another process. Please refresh and try again.");
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
     }
     internalServerError(res, error.message);
   }

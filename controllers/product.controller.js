@@ -101,15 +101,8 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
 
   try {
     const savedProd = await product.save();
-    if (!savedProd) {
-      // Cleanup images if product not saved
-      for (const publicId of cloudinaryPublicIds) {
-        await deleteFromCloudinary(publicId);
-      }
-      return errorRes(res, 400, "Failed to save product. Please try again.");
-    }
-    
     const result = await Product.findById(savedProd._id).select("-__v");
+    
     return successRes(res, {
       product: result,
       message: "Product added successfully.",

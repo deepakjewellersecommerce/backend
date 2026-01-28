@@ -8,10 +8,9 @@ const upload = multer({
     files: 10 // Max 10 files
   },
   fileFilter: (req, file, cb) => {
-    // Validate file type
+    // Validate file type - only standard MIME types
     const allowedMimeTypes = [
-      'image/jpeg',
-      'image/jpg', 
+      'image/jpeg',  // Handles both .jpg and .jpeg extensions
       'image/png',
       'image/gif',
       'image/webp'

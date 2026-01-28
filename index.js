@@ -197,5 +197,29 @@ const errorHandler = (err, req, res, _next) => {
 
 app.use(errorHandler);
 
+// Graceful shutdown handler
+const gracefulShutdown = () => {
+  console.log('Received shutdown signal, cleaning up...');
+  
+  // Stop cron job
+  if (cronService && cronService.stopCron) {
+    cronService.stopCron();
+  }
+  
+  // Close database connection
+  mongoose.connection.close(false, () => {
+    console.log('MongoDB connection closed.');
+  });
+  
+  // Close cache connection
+  if (cacheService && cacheService.disconnect) {
+    cacheService.disconnect();
+  }
+};
+
+// Handle various shutdown signals
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
 // Export the Express app for Vercel
 module.exports = app;
