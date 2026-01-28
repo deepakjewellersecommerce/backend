@@ -364,22 +364,28 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
       seoDescription
     } = req.body;
 
-    const subcategory = await Subcategory.findById(id);
+    // Use findOneAndUpdate with version check for optimistic concurrency control
+    // This prevents race conditions during rapid edits
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (slug) updateData.slug = slug;
+    if (description !== undefined) updateData.description = description;
+    if (imageUrl !== undefined) updateData.imageUrl = imageUrl;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (sortOrder !== undefined) updateData.sortOrder = sortOrder;
+    if (seoTitle !== undefined) updateData.seoTitle = seoTitle;
+    if (seoDescription !== undefined) updateData.seoDescription = seoDescription;
+
+    // Cannot change idAttribute, categoryId, or parentSubcategoryId (would break hierarchy)
+    const subcategory = await Subcategory.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
     if (!subcategory) {
       return errorRes(res, 404, "Subcategory not found");
     }
-
-    // Cannot change idAttribute, categoryId, or parentSubcategoryId (would break hierarchy)
-    if (name) subcategory.name = name;
-    if (slug) subcategory.slug = slug;
-    if (description !== undefined) subcategory.description = description;
-    if (imageUrl !== undefined) subcategory.imageUrl = imageUrl;
-    if (isActive !== undefined) subcategory.isActive = isActive;
-    if (sortOrder !== undefined) subcategory.sortOrder = sortOrder;
-    if (seoTitle !== undefined) subcategory.seoTitle = seoTitle;
-    if (seoDescription !== undefined) subcategory.seoDescription = seoDescription;
-
-    await subcategory.save();
 
     await subcategory.populate([
       { path: "categoryId", select: "name fullCategoryId" },
@@ -392,6 +398,9 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating subcategory:", error);
+    if (error.name === 'VersionError') {
+      return errorRes(res, 409, "Subcategory was modified by another process. Please refresh and try again.");
+    }
     internalServerError(res, error.message);
   }
 });

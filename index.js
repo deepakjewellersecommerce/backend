@@ -1,6 +1,6 @@
 require("dotenv").config();
-// Start daily silver price cron job
-require("./utility/silver-price-cron");
+// Start daily silver price cron job (skipped in test environment)
+const cronService = require("./utility/silver-price-cron");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");

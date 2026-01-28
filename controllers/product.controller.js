@@ -35,6 +35,13 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
 
   if (!productData) return errorRes(res, 400, "Product details are required.");
 
+  // Validate required fields
+  const requiredFields = ['productName', 'productCategory'];
+  const missingFields = requiredFields.filter(field => !productData[field]);
+  if (missingFields.length > 0) {
+    return errorRes(res, 400, `Missing required fields: ${missingFields.join(', ')}`);
+  }
+
   // Parse gemstones if sent as string (from form-data)
   if (productData.gemstones && typeof productData.gemstones === 'string') {
     try {
@@ -44,33 +51,50 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
     }
   }
 
+  // Check for duplicate slug
   if (productData.productSlug) {
     const findSlug = await Product.findOne({
       productSlug: productData.productSlug,
     });
     if (findSlug) {
-      return errorRes(res, 400, "Product slug already exist");
-    }
-  }
-  if (productData.skuNo) {
-    const findSku = await Product.findOne({ skuNo: productData.skuNo });
-    if (findSku) {
-      return errorRes(res, 400, "Product sku already exist");
+      return errorRes(res, 400, "Product slug already exists");
     }
   }
 
-  // Handle image uploads
+  // Check for duplicate SKU
+  if (productData.skuNo) {
+    const findSku = await Product.findOne({ skuNo: productData.skuNo });
+    if (findSku) {
+      return errorRes(res, 400, "Product SKU already exists");
+    }
+  }
+
+  // Handle image uploads with proper error handling
   const files = req.files || [];
   const { uploadOnCloudinary, deleteFromCloudinary } = require("../middlewares/Cloudinary");
   let imageUrls = [];
   let cloudinaryPublicIds = [];
-  for (const file of files) {
-    const data = await uploadOnCloudinary(file);
-    if (data && data.secure_url) {
-      imageUrls.push(data.secure_url);
-      cloudinaryPublicIds.push(data.public_id);
+  
+  try {
+    for (const file of files) {
+      const data = await uploadOnCloudinary(file);
+      if (data && data.secure_url) {
+        imageUrls.push(data.secure_url);
+        cloudinaryPublicIds.push(data.public_id);
+      }
     }
+  } catch (uploadErr) {
+    // Cleanup any uploaded images if upload fails
+    for (const publicId of cloudinaryPublicIds) {
+      try {
+        await deleteFromCloudinary(publicId);
+      } catch (cleanupErr) {
+        console.error("Error cleaning up image:", cleanupErr);
+      }
+    }
+    return errorRes(res, 500, "Image upload failed. Please try again.");
   }
+
   productData.productImageUrl = imageUrls;
 
   const product = new Product(productData);
@@ -82,20 +106,35 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
       for (const publicId of cloudinaryPublicIds) {
         await deleteFromCloudinary(publicId);
       }
-      return errorRes(res, 400, "Internal server error. Please try again.");
-    } else {
-      const result = await Product.findById(savedProd._id).select("-__v");
-      return successRes(res, {
-        product: result,
-        message: "Product added successfully.",
-      });
+      return errorRes(res, 400, "Failed to save product. Please try again.");
     }
+    
+    const result = await Product.findById(savedProd._id).select("-__v");
+    return successRes(res, {
+      product: result,
+      message: "Product added successfully.",
+    });
   } catch (err) {
     // Cleanup images if product creation fails
     for (const publicId of cloudinaryPublicIds) {
-      await deleteFromCloudinary(publicId);
+      try {
+        await deleteFromCloudinary(publicId);
+      } catch (cleanupErr) {
+        console.error("Error cleaning up image:", cleanupErr);
+      }
     }
-    return internalServerError(res, err);
+    
+    // Handle specific mongoose errors
+    if (err.name === 'ValidationError') {
+      const messages = Object.values(err.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
+    }
+    
+    if (err.code === 11000) {
+      return errorRes(res, 400, "Duplicate key error. Product already exists.");
+    }
+    
+    return internalServerError(res, err.message || err);
   }
 });
 

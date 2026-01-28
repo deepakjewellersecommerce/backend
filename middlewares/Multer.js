@@ -1,16 +1,32 @@
-const multer=require('multer');
+const multer = require('multer');
 
-module.exports=multer({
-    storage:multer.diskStorage({}),
-    fileFilter:(req,file,cb)=>{
-        // console.log(file);
-        if(!file.mimetype.match('image/jpeg|image/jpg|image/png|image/gif|image/webp')){  //image/jpeg contains both jpeg and jpg
-            cb(new Error('File is not supported'),false)
-            return
-        }
-// console.log(2)
-        cb(null,true)
-        // console.log(3);
+// Configure multer for file uploads with better error handling
+const upload = multer({
+  storage: multer.diskStorage({}),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+    files: 10 // Max 10 files
+  },
+  fileFilter: (req, file, cb) => {
+    // Validate file type
+    const allowedMimeTypes = [
+      'image/jpeg',
+      'image/jpg', 
+      'image/png',
+      'image/gif',
+      'image/webp'
+    ];
+    
+    if (!allowedMimeTypes.includes(file.mimetype)) {
+      return cb(
+        new Error(`File type not supported. Allowed types: ${allowedMimeTypes.join(', ')}`),
+        false
+      );
     }
-}) 
+    
+    cb(null, true);
+  }
+});
+
+module.exports = upload; 
  
