@@ -140,6 +140,10 @@ module.exports.updateMaterial = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating material:", error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
+    }
     internalServerError(res, error.message);
   }
 });
@@ -258,6 +262,10 @@ module.exports.updateGender = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating gender:", error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
+    }
     internalServerError(res, error.message);
   }
 });
@@ -378,6 +386,10 @@ module.exports.updateItem = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating item:", error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
+    }
     internalServerError(res, error.message);
   }
 });
@@ -604,6 +616,10 @@ module.exports.updateCategory = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating category:", error);
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(e => e.message);
+      return errorRes(res, 400, `Validation error: ${messages.join(', ')}`);
+    }
     internalServerError(res, error.message);
   }
 });
