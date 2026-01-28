@@ -1,4 +1,5 @@
 require("dotenv").config();
+require("./models/admin.model"); // Load the Admin model
 const mongoose = require("mongoose");
 const Admin = mongoose.model("Admin");
 const bcrypt = require("bcrypt");

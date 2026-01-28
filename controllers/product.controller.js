@@ -65,7 +65,7 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
   let imageUrls = [];
   let cloudinaryPublicIds = [];
   for (const file of files) {
-    const data = await cloudinary.uploader.upload(file.path);
+    const data = await uploadOnCloudinary(file);
     if (data && data.secure_url) {
       imageUrls.push(data.secure_url);
       cloudinaryPublicIds.push(data.public_id);

@@ -76,6 +76,9 @@ const price_component_routes = require("./routes/price-component.routes");
 const category_hierarchy_routes = require("./routes/category-hierarchy.routes");
 const subcategory_v2_routes = require("./routes/subcategory-v2.routes");
 const product_pricing_routes = require("./routes/product-pricing.routes");
+const job_routes = require("./routes/job.routes");
+const dashboard_routes = require("./routes/dashboard.routes");
+const dashboard_analytics_routes = require("./routes/dashboard-analytics.routes");
 
 const passport = require("./utility/passport");
 const PORT = process.env.PORT || 5000;
@@ -175,6 +178,9 @@ app.use(price_component_routes);
 app.use(category_hierarchy_routes);
 app.use(subcategory_v2_routes);
 app.use(product_pricing_routes);
+app.use(job_routes);
+app.use(dashboard_routes);
+app.use(dashboard_analytics_routes);
 
 //wrong routes
 app.all("/", (req, res) => {
