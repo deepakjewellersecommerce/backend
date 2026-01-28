@@ -13,6 +13,9 @@ describe('Dashboard Analytics Controller', () => {
   let testProduct1;
   let testProduct2;
 
+  // Increase timeout for database operations
+  jest.setTimeout(30000);
+
   beforeAll(async () => {
     // Wait for DB connection
     if (mongoose.connection.readyState !== 1) {
