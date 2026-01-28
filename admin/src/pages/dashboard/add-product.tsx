@@ -7,7 +7,7 @@ export default function AddProduct() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [isLoading, setIsLoading] = useState(false)
-  const [initialData] = useState<Partial<ProductFormData>>()
+  const [initialData, setInitialData] = useState<Partial<ProductFormData>>()
   const isEditMode = !!id
 
   useEffect(() => {
@@ -24,7 +24,7 @@ export default function AddProduct() {
       // TODO: Replace with actual API call
       // const response = await fetch(`/api/product/${productId}`)
       // const data = await response.json()
-      // setInitialData(data.product)
+      setInitialData({} /* data.product */)
       
       console.log('Fetching product:', productId)
     } catch (error) {

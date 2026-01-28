@@ -22,7 +22,6 @@ import type {
   Item, 
   Gender, 
   Material,
-  PricePreviewResponse,
   MetalType,
   PricingMode,
   GemstoneType
@@ -117,7 +116,8 @@ const GEMSTONE_TYPES: GemstoneType[] = [
 
 export default function ProductFormV2({ initialData, onSubmit, isLoading = false }: ProductFormV2Props) {
   const [manualSlug, setManualSlug] = useState(false)
-  const [, /*setPricePreview*/] = useState<PricePreviewResponse | null>(null)
+  // TODO: Implement price preview with backend API integration
+  // const [pricePreview, setPricePreview] = useState<PricePreviewResponse | null>(null)
   const [subcategories] = useState<Subcategory[]>([])
   const [categories] = useState<Category[]>([])
   const [items] = useState<Item[]>([])
@@ -418,7 +418,7 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
               className="w-full px-3 py-2 border rounded-md"
             >
               {METAL_TYPES.map(type => (
-                <option key={type} value={type}>{type.replace('_', ' ')}</option>
+                <option key={type} value={type}>{type.replace(/_/g, ' ')}</option>
               ))}
             </select>
             {errors.metalType && (
@@ -645,7 +645,7 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
               <div className="mt-3 space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Metal Type:</span>
-                  <span className="font-medium">{watchMetalType.replace('_', ' ')}</span>
+                  <span className="font-medium">{watchMetalType.replace(/_/g, ' ')}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Net Weight:</span>
@@ -659,14 +659,16 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
             </div>
           )}
 
-          {/*pricePreview && (
+          {/* TODO: Implement price preview with backend API
+          {pricePreview && (
             <div className="bg-blue-50 p-4 rounded-md">
               <p className="text-sm font-medium text-blue-900 mb-2">Estimated Price:</p>
               <p className="text-3xl font-bold text-blue-600">
                 {formatCurrency(pricePreview.estimatedPrice)}
               </p>
             </div>
-          )*/}
+          )}
+          */}
         </div>
       </div>
 
@@ -704,6 +706,7 @@ export default function ProductFormV2({ initialData, onSubmit, isLoading = false
       <div className="flex justify-end gap-4">
         <button
           type="button"
+          onClick={() => window.history.back()}
           className="px-6 py-2 border rounded-md hover:bg-gray-50"
         >
           Cancel
