@@ -2,3 +2,10 @@
 node_modules/*
 package-lock.json
 upload
+
+# Admin frontend
+/admin/node_modules
+/admin/dist
+/admin/coverage
+/admin/.vite
+/admin/package-lock.json
