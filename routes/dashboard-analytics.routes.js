@@ -4,6 +4,9 @@ const { requireAdminLogin } = require("../middlewares/requireLogin");
 
 const router = express.Router();
 
+// KPI Cards (Pending Orders, Today's Revenue, Inventory Health)
+router.get("/admin/dashboard/analytics/kpi-cards", requireAdminLogin, dashboardAnalyticsController.getKPICards_get);
+
 // Revenue by metal type
 router.get("/admin/dashboard/analytics/revenue-by-metal", requireAdminLogin, dashboardAnalyticsController.revenueByMetalType_get);
 

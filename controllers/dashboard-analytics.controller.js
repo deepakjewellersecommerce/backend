@@ -245,3 +245,63 @@ module.exports.orderFunnel_get = catchAsync(async (req, res) => {
 
   successRes(res, { data });
 });
+
+/**
+ * Get KPI Cards Data (Pending Orders, Today's Revenue, Inventory Health)
+ * Returns: { pendingOrders, todayRevenue, inventoryHealth }
+ */
+module.exports.getKPICards_get = catchAsync(async (req, res) => {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // 1. Pending Orders Count (PLACED status)
+  const pendingOrdersCount = await User_Order.countDocuments({
+    order_status: "PLACED",
+    payment_status: "COMPLETE"
+  });
+
+  // 2. Today's Revenue
+  const [todayRevenueStats] = await User_Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: todayStart },
+        payment_status: "COMPLETE",
+        order_status: { $ne: "CANCELLED BY ADMIN" }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        revenue: { $sum: "$grandTotal" },
+        orderCount: { $sum: 1 }
+      }
+    }
+  ]);
+
+  // 3. Inventory Health Valuation (reuse from inventoryHealth_get)
+  const [valuationStats] = await Inventory.aggregate([
+    {
+      $group: {
+        _id: null,
+        totalValuation: { $sum: { $multiply: ["$availableStock", { $ifNull: ["$costPrice", 0] }] } },
+        totalItems: { $sum: "$availableStock" }
+      }
+    }
+  ]);
+
+  const data = {
+    pendingOrders: {
+      count: pendingOrdersCount
+    },
+    todayRevenue: {
+      amount: todayRevenueStats?.revenue || 0,
+      orderCount: todayRevenueStats?.orderCount || 0
+    },
+    inventoryHealth: {
+      valuation: valuationStats?.totalValuation || 0,
+      totalStockCount: valuationStats?.totalItems || 0
+    }
+  };
+
+  successRes(res, { data });
+});
