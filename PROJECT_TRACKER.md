@@ -89,15 +89,17 @@ Visual, chip-based formula builder for the jewelry pricing system implemented in
      - Chip/formula conversion
      - Number formatting
   
-  2. **FormulaChip.test.tsx** (8 tests):
+  2. **FormulaChip.test.tsx** (11 tests):
      - Chip rendering for all types
      - Delete callback invocation
      - Hover state and delete icon
      - Hover callback invocation
      - Type-specific styling
      - Accessibility attributes
+     - Enter key press handling
+     - Space key press handling
   
-  3. **FormulaInput.test.tsx** (11 tests):
+  3. **FormulaInput.test.tsx** (13 tests):
      - Placeholder display
      - Chip rendering
      - Picker panel toggle
@@ -107,6 +109,7 @@ Visual, chip-based formula builder for the jewelry pricing system implemented in
      - Validation feedback display
      - Disabled state
      - Custom placeholder
+     - Enter key on number input
   
   4. **CalculationBreakdown.test.tsx** (11 tests):
      - Empty formula handling
@@ -132,7 +135,7 @@ Visual, chip-based formula builder for the jewelry pricing system implemented in
      - Template hiding
      - Panel auto-close after selection
 
-**Total: 55 tests across 5 test files**
+**Total: 70 tests across 5 test files**
 
 #### 5. Build Configuration
 - ✅ **package.json** - Dependencies and scripts:

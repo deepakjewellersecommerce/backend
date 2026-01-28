@@ -110,17 +110,18 @@ describe('Formula Validator', () => {
   describe('formatNumber', () => {
     it('should format number with default 2 decimals', () => {
       const formatted = formatNumber(1234.567)
-      expect(formatted).toContain('1,234.57')
+      // en-IN locale uses comma as thousands separator
+      expect(formatted).toMatch(/1,234\.57/)
     })
 
     it('should format number with custom decimals', () => {
       const formatted = formatNumber(1234.567, 1)
-      expect(formatted).toContain('1,234.6')
+      expect(formatted).toMatch(/1,234\.6/)
     })
 
     it('should format zero', () => {
       const formatted = formatNumber(0)
-      expect(formatted).toContain('0.00')
+      expect(formatted).toMatch(/0\.00/)
     })
   })
 })

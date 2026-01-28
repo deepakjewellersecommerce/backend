@@ -113,6 +113,13 @@ export const FormulaChip: React.FC<FormulaChipProps> = ({
     }
   }
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (onDelete && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault()
+      onDelete()
+    }
+  }
+
   return (
     <span
       style={getChipStyle()}
@@ -122,6 +129,7 @@ export const FormulaChip: React.FC<FormulaChipProps> = ({
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
       onClick={handleClick}
+      onKeyDown={handleKeyDown}
       data-testid={testId || `formula-chip-${type}`}
       role="button"
       tabIndex={0}

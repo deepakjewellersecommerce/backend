@@ -75,4 +75,24 @@ describe('FormulaChip Component', () => {
     expect(chip).toHaveAttribute('aria-label', 'variable chip: netWeight')
     expect(chip).toHaveAttribute('tabIndex', '0')
   })
+
+  it('should handle Enter key press when onDelete is provided', () => {
+    const handleDelete = vi.fn()
+    render(<FormulaChip value="test" type="variable" onDelete={handleDelete} />)
+    
+    const chip = screen.getByRole('button')
+    fireEvent.keyDown(chip, { key: 'Enter' })
+    
+    expect(handleDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('should handle Space key press when onDelete is provided', () => {
+    const handleDelete = vi.fn()
+    render(<FormulaChip value="test" type="variable" onDelete={handleDelete} />)
+    
+    const chip = screen.getByRole('button')
+    fireEvent.keyDown(chip, { key: ' ' })
+    
+    expect(handleDelete).toHaveBeenCalledTimes(1)
+  })
 })

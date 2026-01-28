@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { FormulaInput } from '../components/formula-builder/FormulaInput'
 
 describe('FormulaInput Component', () => {
@@ -134,5 +134,22 @@ describe('FormulaInput Component', () => {
     )
     
     expect(screen.getByText('Custom placeholder')).toBeInTheDocument()
+  })
+
+  it('should add number when Enter key is pressed', () => {
+    const handleChange = vi.fn()
+    render(<FormulaInput chips={[]} onChange={handleChange} />)
+    
+    const inputArea = screen.getByTestId('formula-input-area')
+    fireEvent.click(inputArea)
+    
+    const showNumberButton = screen.getByTestId('show-number-input')
+    fireEvent.click(showNumberButton)
+    
+    const numberInput = screen.getByTestId('number-input')
+    fireEvent.change(numberInput, { target: { value: '42' } })
+    fireEvent.keyPress(numberInput, { key: 'Enter', code: 'Enter', charCode: 13 })
+    
+    expect(handleChange).toHaveBeenCalledWith(['42'])
   })
 })
