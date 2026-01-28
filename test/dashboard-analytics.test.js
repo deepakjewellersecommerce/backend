@@ -9,10 +9,6 @@ const Product = mongoose.model("Product");
 const Admin = mongoose.model("Admin");
 
 describe('Dashboard Analytics Controller', () => {
-  let adminToken;
-  let testProduct1;
-  let testProduct2;
-
   // Increase timeout for database operations
   jest.setTimeout(30000);
 
@@ -39,9 +35,6 @@ describe('Dashboard Analytics Controller', () => {
       isVerified: true
     });
     await testAdmin.save();
-
-    // Mock admin login to get token (if needed)
-    // For now, tests will check for 401 or 200 status
   });
 
   afterAll(async () => {

@@ -271,7 +271,7 @@ Required (Admin only)
 ### Example Request
 
 ```
-GET /admin/dashboard/analytics/discount-efficiency?startDate=2024-Q1
+GET /admin/dashboard/analytics/discount-efficiency?startDate=2024-01-01&endDate=2024-03-31
 ```
 
 ### Success Response (200 OK)
