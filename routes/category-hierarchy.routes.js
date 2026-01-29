@@ -9,6 +9,15 @@ const categoryHierarchyController = require("../controllers/category-hierarchy.c
 const { requireAdminLogin } = require("../middlewares/requireLogin");
 const { validateObjectId } = require("../middlewares/validation");
 
+// ==================== SUBCATEGORIES FLAT LIST ====================
+
+// Get all subcategories with full hierarchy path (for flat dropdown)
+router.get(
+  "/admin/categories/subcategories/flat",
+  requireAdminLogin,
+  categoryHierarchyController.getAllSubcategoriesFlat
+);
+
 // ==================== HIERARCHY HELPERS ====================
 
 // Get full hierarchy tree

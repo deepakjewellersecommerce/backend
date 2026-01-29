@@ -608,6 +608,76 @@ module.exports.updateCategory = catchAsync(async (req, res) => {
   }
 });
 
+// ==================== SUBCATEGORIES FLAT LIST ====================
+
+/**
+ * Get all subcategories with full hierarchy path (for flat dropdown)
+ * GET /api/admin/categories/subcategories/flat
+ */
+module.exports.getAllSubcategoriesFlat = catchAsync(async (req, res) => {
+  try {
+    const { includeInactive = false } = req.query;
+
+    const query = {};
+    if (!includeInactive || includeInactive === "false") {
+      query.isActive = true;
+    }
+
+    const subcategories = await Subcategory.find(query)
+      .populate("materialId", "name idAttribute metalType")
+      .populate("genderId", "name idAttribute")
+      .populate("itemId", "name idAttribute")
+      .populate("categoryId", "name idAttribute")
+      .sort({ fullCategoryId: 1 });
+
+    // Transform to flat list with display labels
+    const flatList = subcategories.map((sub) => {
+      const material = sub.materialId;
+      const gender = sub.genderId;
+      const item = sub.itemId;
+      const category = sub.categoryId;
+
+      // Build display label: "Material > Gender > Item > Category > Subcategory"
+      const displayLabel = [
+        material?.name,
+        gender?.name,
+        item?.name,
+        category?.name,
+        sub.name
+      ]
+        .filter(Boolean)
+        .join(" > ");
+
+      return {
+        _id: sub._id,
+        name: sub.name,
+        fullCategoryId: sub.fullCategoryId,
+        displayLabel,
+        material: material
+          ? { _id: material._id, name: material.name, metalType: material.metalType }
+          : null,
+        gender: gender ? { _id: gender._id, name: gender.name } : null,
+        item: item ? { _id: item._id, name: item.name } : null,
+        category: category ? { _id: category._id, name: category.name } : null,
+        materialId: sub.materialId?._id,
+        genderId: sub.genderId?._id,
+        itemId: sub.itemId?._id,
+        categoryId: sub.categoryId?._id,
+        hasPricingConfig: sub.hasPricingConfig,
+        isActive: sub.isActive
+      };
+    });
+
+    successRes(res, {
+      subcategories: flatList,
+      message: "Subcategories retrieved successfully"
+    });
+  } catch (error) {
+    console.error("Error getting flat subcategories:", error);
+    internalServerError(res, error.message);
+  }
+});
+
 // ==================== HIERARCHY HELPERS ====================
 
 /**
