@@ -92,6 +92,11 @@ class CacheService {
     }
   }
 
+  // Alias for del (for compatibility)
+  async delete(key) {
+    return this.del(key);
+  }
+
   // Clear multiple keys with pattern
   async clearPattern(pattern) {
     if (!this.enabled || !this.isConnected) return false;

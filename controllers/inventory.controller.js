@@ -1,5 +1,5 @@
 const Inventory = require("../models/inventory.model");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
 const cacheService = require("../services/cache.service");

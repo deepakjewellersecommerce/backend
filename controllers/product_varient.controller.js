@@ -1,5 +1,5 @@
 const ProductImage = require("../models/product_images");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const productVariation = require("../models/product_varient");
 const catchAsync = require("../utility/catch-async");
 const { errorRes } = require("../utility");

@@ -7,7 +7,7 @@ const {
 const ProductCategory = require("../models/product_category.model");
 const catchAsync = require("../utility/catch-async");
 const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const getAllNestedSubcategories = require("../utility/utils");
 
 module.exports.addProductCategory_post = catchAsync(async (req, res) => {
@@ -117,24 +117,58 @@ module.exports.getSubCategory_get = catchAsync(async (req, res) => {
 });
 
 module.exports.deleteProductCategory_delete = async (req, res) => {
-  const { categoryId } = req.params;
+  try {
+    const { categoryId } = req.params;
 
-  if (!categoryId) return errorRes(res, 400, "Category ID is required.");
-  const product_C = await ProductCategory.findById({ _id: categoryId });
-  if (!product_C) return errorRes(res, 400, "Category does not exist.");
+    if (!categoryId) return errorRes(res, 400, "Category ID is required.");
 
-  await deleteFromCloudinary(product_C.displayImage.url);
-  ProductCategory.findByIdAndDelete(categoryId)
-    .then((deletedCategory) => {
-      if (!deletedCategory)
-        return errorRes(res, 400, "Category does not exist.");
-      else
-        return successRes(res, {
-          deletedCategory,
-          message: "Category deleted successfully.",
-        });
-    })
-    .catch((err) => console.log(err));
+    const product_C = await ProductCategory.findById({ _id: categoryId });
+    if (!product_C) return errorRes(res, 404, "Category does not exist.");
+
+    // Check for nested subcategories
+    const nested = await getAllNestedSubcategories(categoryId);
+    if (nested && nested.length > 0) {
+      return errorRes(
+        res,
+        400,
+        `Cannot delete category. It has ${nested.length} subcategory(ies). Please remove or reassign them first.`
+      );
+    }
+
+    // Check for products under this category (includes nested categories)
+    const categoryIdsToCheck = [categoryId];
+    if (nested && nested.length > 0) {
+      categoryIdsToCheck.push(...nested.map((c) => c._id));
+    }
+
+    const productsCount = await Product.countDocuments({ category: { $in: categoryIdsToCheck }, isActive: true });
+
+    if (productsCount > 0) {
+      return errorRes(
+        res,
+        400,
+        `Cannot delete category. It has ${productsCount} active product(s). Move or delete products first.`
+      );
+    }
+
+    // Remove image from Cloudinary if present
+    try {
+      if (product_C.imageUrl) await deleteFromCloudinary(product_C.imageUrl);
+    } catch (err) {
+      console.warn("Warning: failed to delete category image from cloudinary", err.message);
+    }
+
+    const deletedCategory = await ProductCategory.findByIdAndDelete(categoryId);
+    if (!deletedCategory) return errorRes(res, 400, "Category does not exist.");
+
+    return successRes(res, {
+      deletedCategory,
+      message: "Category deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Error deleting category:", error);
+    internalServerError(res, error.message);
+  }
 };
 module.exports.editCategory = catchAsync(async (req, res) => {
   const { categoryId } = req.params;
@@ -185,15 +219,16 @@ module.exports.getCategoryProducts_get = catchAsync(async (req, res) => {
   const categoryId = find._id;
   console.log(categoryId);
   if (categoryId && mongoose.isValidObjectId(categoryId)) {
-    const categories = await getAllNestedSubcategories(categoryId);
-    categories.push(categoryId);
-    filter.category = { $in: categories };
+    const nested = await getAllNestedSubcategories(categoryId);
+    const categoryIds = nested.map((c) => c._id.toString());
+    categoryIds.push(categoryId);
+    filter.categoryId = { $in: categoryIds };
   }
 
   const products = await buildPaginatedSortedFilteredQuery(
     Product.find(filter)
       .sort("-createdAt")
-      .populate("category", "_id name description displayImage"),
+      .populate("categoryId", "_id name description displayImage"),
     req,
     Product
   );

@@ -34,6 +34,16 @@ require("./models/loyalty-program.model");
 require("./models/user-loyalty.model");
 require("./models/inventory.model");
 
+// Import multi-metal pricing models
+require("./models/metal-price.model");
+require("./models/material.model");
+require("./models/gender.model");
+require("./models/item.model");
+require("./models/category.model");
+require("./models/subcategory.model");
+require("./models/price-component.model");
+require("./models/subcategory-pricing.model");
+
 const auth_routes = require("./routes/auth.routes");
 const product_category_routes = require("./routes/product_category.routes");
 const product_color_routes = require("./routes/product_color.routes");
@@ -59,6 +69,13 @@ const loyalty_routes = require("./routes/loyalty.routes");
 const bulk_upload_routes = require("./routes/bulk-upload.routes");
 const stripe_payment_routes = require("./routes/stripe-payment.routes");
 const inventory_routes = require("./routes/inventory.routes");
+
+// Import multi-metal pricing routes
+const metal_price_routes = require("./routes/metal-price.routes");
+const price_component_routes = require("./routes/price-component.routes");
+const category_hierarchy_routes = require("./routes/category-hierarchy.routes");
+const subcategory_v2_routes = require("./routes/subcategory-v2.routes");
+const product_pricing_routes = require("./routes/product-pricing.routes");
 
 const passport = require("./utility/passport");
 const PORT = process.env.PORT || 5000;
@@ -108,7 +125,7 @@ app.use(express.json({ extended: true, limit: '10mb' }));
 app.use(cookieParser({ httpOnly: true, secure: true, sameSite: "none" }));
 
 app.get("/", (req, res) => {
-  res.status(200).json({ message: "Raajsi backend server is running" });
+  res.status(200).json({ message: "DJ backend server is running" });
 });
 
 const corsOptions = {
@@ -151,6 +168,13 @@ app.use(inventory_routes);
 // Silver price admin/manual update route
 const silver_price_routes = require("./routes/silver-price.routes");
 app.use(silver_price_routes);
+
+// Use multi-metal pricing routes
+app.use(metal_price_routes);
+app.use(price_component_routes);
+app.use(category_hierarchy_routes);
+app.use(subcategory_v2_routes);
+app.use(product_pricing_routes);
 
 //wrong routes
 app.all("/", (req, res) => {

@@ -1,0 +1,32 @@
+{
+  "_id": "69688565cee7f72e8e146e59",
+  "name": "Wastage Charges",
+  "key": "wastage_charges",
+  "description": "Material wastage during manufacturing",
+  "calculationType": "FORMULA",
+  "defaultValue": 0,
+  "formula": "(grossWeight - netWeight) × metalRate × 0.5",
+  "formulaChips": [
+    "(",
+    "grossWeight",
+    "-",
+    "netWeight",
+    ")",
+    "×",
+    "metalRate",
+    "×",
+    "0.5"
+  ],
+  "percentageOf": "metalCost",
+  "isSystemComponent": true,
+  "allowsFreeze": true,
+  "isActive": true,
+  "isVisible": true,
+  "sortOrder": 3,
+  "isDeleted": false,
+  "deletedAt": null,
+  "createdAt": "2026-01-15T06:12:53.694Z",
+  "updatedAt": "2026-01-15T06:12:53.694Z",
+  "__v": 0,
+  "id": "69688565cee7f72e8e146e59"
+}

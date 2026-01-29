@@ -11,7 +11,7 @@ const {
 } = require("../utility/index");
 const catchAsync = require("../utility/catch-async");
 const { User_Order } = require("../models/order.model");
-const Product = require("../models/product.model");
+const { Product } = require("../models/product.model");
 const ProductCategory = require("../models/product_category.model");
 const Constant = require("../models/constant.model");
 const JWT_SECRET_ADMIN = process.env.JWT_SECRET_ADMIN;
