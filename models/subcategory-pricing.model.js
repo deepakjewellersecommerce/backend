@@ -30,15 +30,21 @@ const componentConfigSchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
-    formula: {
-      type: String,
-      default: null
-    },
-    formulaChips: [{ type: String }],
     percentageOf: {
       type: String,
       default: "metalCost",
-      enum: ["metalCost", "subtotal", "grossWeight", "netWeight"]
+      enum: ["metalCost", "subtotal"]
+    },
+    // Metal price mode for metal_cost component (AUTO or MANUAL)
+    metalPriceMode: {
+      type: String,
+      enum: ["AUTO", "MANUAL", null],
+      default: null
+    },
+    // Manual metal price per gram (used when metalPriceMode is MANUAL)
+    manualMetalPrice: {
+      type: Number,
+      default: null
     },
     // Freeze state
     isFrozen: {
@@ -56,10 +62,6 @@ const componentConfigSchema = new mongoose.Schema(
     },
     originalValue: {
       type: Number,
-      default: null
-    },
-    originalFormula: {
-      type: String,
       default: null
     },
     frozenAt: {
@@ -191,9 +193,9 @@ subcategoryPricingSchema.statics.createDefault = async function (
     componentName: comp.name,
     calculationType: comp.calculationType,
     value: comp.defaultValue,
-    formula: comp.formula,
-    formulaChips: comp.formulaChips,
     percentageOf: comp.percentageOf,
+    metalPriceMode: comp.metalPriceMode || (comp.key === "metal_cost" ? "AUTO" : null),
+    manualMetalPrice: null,
     isActive: comp.isActive,
     isVisible: comp.isVisible,
     sortOrder: comp.sortOrder || index
@@ -229,7 +231,6 @@ subcategoryPricingSchema.methods.freezeComponent = async function (
   // Store original values for unfreeze
   component.originalCalculationType = component.calculationType;
   component.originalValue = component.value;
-  component.originalFormula = component.formula;
 
   // Set frozen state
   component.isFrozen = true;
@@ -278,7 +279,6 @@ subcategoryPricingSchema.methods.unfreezeComponent = async function (
   // Restore original calculation
   component.calculationType = component.originalCalculationType;
   component.value = component.originalValue;
-  component.formula = component.originalFormula;
 
   // Clear frozen state
   component.isFrozen = false;
@@ -289,7 +289,6 @@ subcategoryPricingSchema.methods.unfreezeComponent = async function (
   component.frozenBy = null;
   component.originalCalculationType = null;
   component.originalValue = null;
-  component.originalFormula = null;
 
   // Add to history
   this.freezeHistory.push({
@@ -326,9 +325,9 @@ subcategoryPricingSchema.methods.updateComponent = function (
   const allowedUpdates = [
     "calculationType",
     "value",
-    "formula",
-    "formulaChips",
     "percentageOf",
+    "metalPriceMode",
+    "manualMetalPrice",
     "isActive",
     "isVisible",
     "sortOrder"
@@ -370,9 +369,9 @@ subcategoryPricingSchema.methods.addComponent = async function (
     componentName: component.name,
     calculationType: overrides.calculationType || component.calculationType,
     value: overrides.value ?? component.defaultValue,
-    formula: overrides.formula || component.formula,
-    formulaChips: overrides.formulaChips || component.formulaChips,
     percentageOf: overrides.percentageOf || component.percentageOf,
+    metalPriceMode: overrides.metalPriceMode || component.metalPriceMode,
+    manualMetalPrice: overrides.manualMetalPrice || null,
     isActive: overrides.isActive ?? component.isActive,
     isVisible: overrides.isVisible ?? component.isVisible,
     sortOrder: overrides.sortOrder ?? maxSortOrder + 1
@@ -405,11 +404,11 @@ subcategoryPricingSchema.methods.removeComponent = function (componentKey) {
  * Instance method: Calculate price breakdown
  */
 subcategoryPricingSchema.methods.calculateBreakdown = function (context) {
-  const { netWeight, grossWeight, metalRate } = context;
-  const metalCost = netWeight * metalRate;
+  const { netWeight, metalRate } = context;
 
   const breakdown = [];
   let subtotal = 0;
+  let metalCost = 0;
 
   // Sort components by sortOrder
   const sortedComponents = [...this.components].sort(
@@ -425,59 +424,34 @@ subcategoryPricingSchema.methods.calculateBreakdown = function (context) {
       // Use frozen value
       value = component.frozenValue;
     } else {
-      // Calculate based on type
-      switch (component.calculationType) {
-        case "PER_GRAM":
-          value = netWeight * metalRate * (component.value || 1);
-          break;
+      // Special handling for metal_cost component
+      if (component.componentKey === "metal_cost") {
+        if (component.metalPriceMode === "MANUAL" && component.manualMetalPrice) {
+          value = component.manualMetalPrice * netWeight;
+        } else {
+          value = netWeight * metalRate; // AUTO mode
+        }
+        metalCost = value; // Store metalCost for percentage calculations
+      } else {
+        // Calculate based on type
+        switch (component.calculationType) {
+          case "PER_GRAM":
+            value = netWeight * (component.value || 1);
+            break;
 
-        case "PERCENTAGE":
-          let base;
-          switch (component.percentageOf) {
-            case "subtotal":
-              base = subtotal;
-              break;
-            case "grossWeight":
-              base = grossWeight * metalRate;
-              break;
-            case "netWeight":
-              base = netWeight * metalRate;
-              break;
-            case "metalCost":
-            default:
-              base = metalCost;
-          }
-          value = (base * component.value) / 100;
-          break;
+          case "PERCENTAGE":
+            // subtotal = running total of all previous components
+            const base = component.percentageOf === "subtotal" ? subtotal : metalCost;
+            value = (base * component.value) / 100;
+            break;
 
-        case "FIXED":
-          value = component.value;
-          break;
+          case "FIXED":
+            value = component.value;
+            break;
 
-        case "FORMULA":
-          if (!component.formula) {
+          default:
             value = 0;
-          } else {
-            try {
-              let jsFormula = component.formula
-                .replace(/×/g, "*")
-                .replace(/÷/g, "/")
-                .replace(/grossWeight/g, grossWeight)
-                .replace(/netWeight/g, netWeight)
-                .replace(/metalRate/g, metalRate)
-                .replace(/metalCost/g, metalCost)
-                .replace(/subtotal/g, subtotal);
-
-              value = eval(jsFormula);
-              if (!isFinite(value)) value = 0;
-            } catch (error) {
-              value = 0;
-            }
-          }
-          break;
-
-        default:
-          value = 0;
+        }
       }
     }
 
@@ -496,6 +470,26 @@ subcategoryPricingSchema.methods.calculateBreakdown = function (context) {
     });
 
     subtotal += value;
+  }
+
+  // Merge hidden components into metal_cost for user view consistency
+  let hiddenValueTotal = 0;
+  let metalCostIndex = -1;
+
+  for (let i = 0; i < breakdown.length; i++) {
+    if (breakdown[i].componentKey === "metal_cost") {
+      metalCostIndex = i;
+    } else if (!breakdown[i].isVisible) {
+      hiddenValueTotal += breakdown[i].value;
+      breakdown[i].value = 0; // Set to 0 so total remains same and it's essentially hidden
+    }
+  }
+
+  if (hiddenValueTotal > 0 && metalCostIndex !== -1) {
+    breakdown[metalCostIndex].value =
+      Math.round((breakdown[metalCostIndex].value + hiddenValueTotal) * 100) / 100;
+    // Update the top-level metalCost in the return object
+    metalCost = breakdown[metalCostIndex].value;
   }
 
   return {
@@ -517,14 +511,13 @@ subcategoryPricingSchema.methods.cloneConfig = function () {
       componentName: c.componentName,
       calculationType: c.calculationType,
       value: c.value,
-      formula: c.formula,
-      formulaChips: c.formulaChips ? [...c.formulaChips] : [],
       percentageOf: c.percentageOf,
+      metalPriceMode: c.metalPriceMode,
+      manualMetalPrice: c.manualMetalPrice,
       isFrozen: c.isFrozen,
       frozenValue: c.frozenValue,
       originalCalculationType: c.originalCalculationType,
       originalValue: c.originalValue,
-      originalFormula: c.originalFormula,
       frozenAt: c.frozenAt,
       metalRateAtFreeze: c.metalRateAtFreeze,
       freezeReason: c.freezeReason,

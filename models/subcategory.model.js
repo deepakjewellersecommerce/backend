@@ -128,6 +128,13 @@ const subcategorySchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    // Default weight for products in this subcategory (in grams)
+    // Required when custom pricing is configured
+    weight: {
+      type: Number,
+      default: null,
+      min: [0, "Weight cannot be negative"]
+    },
     // SEO fields
     seoTitle: {
       type: String,

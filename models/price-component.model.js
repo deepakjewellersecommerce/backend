@@ -5,20 +5,8 @@ const mongoose = require("mongoose");
  */
 const CALCULATION_TYPES = {
   PER_GRAM: "PER_GRAM", // netWeight × metalRate
-  PERCENTAGE: "PERCENTAGE", // X% of reference value (usually metal cost)
-  FIXED: "FIXED", // Fixed rupee amount
-  FORMULA: "FORMULA" // Custom formula using variables
-};
-
-/**
- * Available Variables for Formula Building
- */
-const FORMULA_VARIABLES = {
-  grossWeight: "Gross weight in grams",
-  netWeight: "Net weight in grams",
-  metalRate: "Current metal price per gram",
-  metalCost: "Auto-calculated: netWeight × metalRate",
-  subtotal: "Sum of components before this one (by sortOrder)"
+  PERCENTAGE: "PERCENTAGE", // X% of reference value (metalCost or subtotal)
+  FIXED: "FIXED" // Fixed rupee amount
 };
 
 /**
@@ -63,41 +51,24 @@ const priceComponentSchema = new mongoose.Schema(
     // Default value based on calculation type
     // For PERCENTAGE: percentage value (e.g., 15 for 15%)
     // For FIXED: rupee amount
-    // For FORMULA: null (formula stored separately)
     // For PER_GRAM: usually 1 (multiplier)
     defaultValue: {
       type: Number,
       default: 0
     },
-    // Formula expression (only for FORMULA type)
-    // Stored as a parseable expression string
-    // Example: "(grossWeight - netWeight) × metalRate × 0.05"
-    formula: {
-      type: String,
-      default: null,
-      validate: {
-        validator: function (v) {
-          if (this.calculationType !== CALCULATION_TYPES.FORMULA) {
-            return true;
-          }
-          return v && v.length > 0;
-        },
-        message: "Formula is required for FORMULA calculation type"
-      }
-    },
-    // Formula chips for UI reconstruction
-    // Example: ["grossWeight", "-", "netWeight", "×", "metalRate", "×", "0.05"]
-    formulaChips: [
-      {
-        type: String
-      }
-    ],
     // Reference for PERCENTAGE type (what the percentage is of)
-    // Default: "metalCost"
+    // Only "metalCost" or "subtotal" allowed
     percentageOf: {
       type: String,
       default: "metalCost",
-      enum: ["metalCost", "subtotal", "grossWeight", "netWeight"]
+      enum: ["metalCost", "subtotal"]
+    },
+    // Metal price mode (only for metal_cost component)
+    // AUTO: uses system metal rate, MANUAL: admin enters price
+    metalPriceMode: {
+      type: String,
+      enum: ["AUTO", "MANUAL", null],
+      default: null
     },
     // System vs Custom
     isSystemComponent: {
@@ -174,141 +145,32 @@ priceComponentSchema.statics.getByKey = async function (key) {
   return this.findOne({ key, isDeleted: false });
 };
 
-/**
- * Static: Validate formula
- * Checks for valid syntax and variables
- */
-priceComponentSchema.statics.validateFormula = function (
-  formula,
-  testValues = {}
-) {
-  const validVariables = Object.keys(FORMULA_VARIABLES);
-  const errors = [];
-
-  // Check for unknown variables
-  const variablePattern = /[a-zA-Z]+/g;
-  const usedVariables = formula.match(variablePattern) || [];
-
-  for (const variable of usedVariables) {
-    if (!validVariables.includes(variable) && isNaN(parseFloat(variable))) {
-      errors.push(`Unknown variable: ${variable}`);
-    }
-  }
-
-  // Test calculation with sample values
-  const defaultTestValues = {
-    grossWeight: testValues.grossWeight || 10,
-    netWeight: testValues.netWeight || 9.5,
-    metalRate: testValues.metalRate || 5000,
-    metalCost:
-      testValues.metalCost || (testValues.netWeight || 9.5) * (testValues.metalRate || 5000),
-    subtotal: testValues.subtotal || 50000
-  };
-
-  try {
-    // Convert formula to JavaScript expression
-    let jsFormula = formula
-      .replace(/×/g, "*")
-      .replace(/÷/g, "/");
-
-    // Replace variables with values
-    for (const [variable, value] of Object.entries(defaultTestValues)) {
-      jsFormula = jsFormula.replace(new RegExp(variable, "g"), value);
-    }
-
-    // Evaluate
-    const result = eval(jsFormula);
-
-    if (isNaN(result) || !isFinite(result)) {
-      errors.push("Formula produces invalid result (NaN or Infinity)");
-    }
-
-    // Test edge case: zero values
-    const zeroTestFormula = formula
-      .replace(/×/g, "*")
-      .replace(/÷/g, "/")
-      .replace(/grossWeight/g, "0")
-      .replace(/netWeight/g, "0")
-      .replace(/metalRate/g, "0")
-      .replace(/metalCost/g, "0")
-      .replace(/subtotal/g, "0");
-
-    try {
-      const zeroResult = eval(zeroTestFormula);
-      if (!isFinite(zeroResult)) {
-        errors.push("Formula causes division by zero with zero inputs");
-      }
-    } catch (e) {
-      // Division by zero is caught here
-      errors.push("Formula may cause division by zero");
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors,
-      testResult: errors.length === 0 ? result : null,
-      testValues: defaultTestValues
-    };
-  } catch (error) {
-    return {
-      valid: false,
-      errors: [`Invalid formula syntax: ${error.message}`],
-      testResult: null,
-      testValues: defaultTestValues
-    };
-  }
-};
 
 /**
  * Instance method: Calculate value
  */
 priceComponentSchema.methods.calculate = function (context) {
-  const { netWeight, grossWeight, metalRate, subtotal = 0 } = context;
-  const metalCost = netWeight * metalRate;
+  const { netWeight, metalRate, metalCost, subtotal = 0, manualMetalPrice } = context;
+  const calculatedMetalCost = metalCost || netWeight * metalRate;
+
+  // Special handling for metal_cost component
+  if (this.key === "metal_cost") {
+    if (this.metalPriceMode === "MANUAL" && manualMetalPrice) {
+      return manualMetalPrice * netWeight;
+    }
+    return netWeight * metalRate; // AUTO mode
+  }
 
   switch (this.calculationType) {
     case CALCULATION_TYPES.PER_GRAM:
       return netWeight * metalRate * (this.defaultValue || 1);
 
     case CALCULATION_TYPES.PERCENTAGE:
-      let base;
-      switch (this.percentageOf) {
-        case "subtotal":
-          base = subtotal;
-          break;
-        case "grossWeight":
-          base = grossWeight * metalRate;
-          break;
-        case "netWeight":
-          base = netWeight * metalRate;
-          break;
-        case "metalCost":
-        default:
-          base = metalCost;
-      }
+      const base = this.percentageOf === "subtotal" ? subtotal : calculatedMetalCost;
       return (base * this.defaultValue) / 100;
 
     case CALCULATION_TYPES.FIXED:
       return this.defaultValue;
-
-    case CALCULATION_TYPES.FORMULA:
-      if (!this.formula) return 0;
-      try {
-        let jsFormula = this.formula
-          .replace(/×/g, "*")
-          .replace(/÷/g, "/")
-          .replace(/grossWeight/g, grossWeight)
-          .replace(/netWeight/g, netWeight)
-          .replace(/metalRate/g, metalRate)
-          .replace(/metalCost/g, metalCost)
-          .replace(/subtotal/g, subtotal);
-
-        const result = eval(jsFormula);
-        return isFinite(result) ? result : 0;
-      } catch (error) {
-        console.error(`Formula calculation error: ${error.message}`);
-        return 0;
-      }
 
     default:
       return 0;
@@ -381,6 +243,5 @@ const PriceComponent = mongoose.model("PriceComponent", priceComponentSchema);
 
 module.exports = {
   PriceComponent,
-  CALCULATION_TYPES,
-  FORMULA_VARIABLES
+  CALCULATION_TYPES
 };
