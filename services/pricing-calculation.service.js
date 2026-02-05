@@ -1,8 +1,7 @@
 const { MetalPrice, METAL_TYPES } = require("../models/metal-price.model");
 const {
   PriceComponent,
-  CALCULATION_TYPES,
-  FORMULA_VARIABLES
+  CALCULATION_TYPES
 } = require("../models/price-component.model");
 const SubcategoryPricing = require("../models/subcategory-pricing.model");
 const Subcategory = require("../models/subcategory.model.js");
@@ -99,8 +98,7 @@ class PricingCalculationService {
    * Calculate price breakdown from config
    */
   calculateBreakdown(pricingConfig, context) {
-    const { grossWeight, netWeight, metalRate } = context;
-    const metalCost = netWeight * metalRate;
+    const { netWeight, metalRate } = context;
 
     const components = pricingConfig.components || [];
     const sortedComponents = [...components].sort(
@@ -109,6 +107,7 @@ class PricingCalculationService {
 
     const breakdown = [];
     let subtotal = 0;
+    let metalCost = 0;
 
     for (const component of sortedComponents) {
       if (!component.isActive) continue;
@@ -119,16 +118,21 @@ class PricingCalculationService {
         value = component.frozenValue;
       } else {
         value = this.calculateComponentValue(component, {
-          grossWeight,
           netWeight,
           metalRate,
           metalCost,
-          subtotal
+          subtotal,
+          manualMetalPrice: component.manualMetalPrice
         });
       }
 
       // Round to 2 decimal places
       value = Math.round(value * 100) / 100;
+
+      // Track metalCost from metal_cost component
+      if (component.componentKey === "metal_cost") {
+        metalCost = value;
+      }
 
       breakdown.push({
         componentId: component.componentId,
@@ -144,6 +148,26 @@ class PricingCalculationService {
       subtotal += value;
     }
 
+    // Merge hidden components into metal_cost for user view consistency
+    let hiddenValueTotal = 0;
+    let metalCostIndex = -1;
+
+    for (let i = 0; i < breakdown.length; i++) {
+      if (breakdown[i].componentKey === "metal_cost") {
+        metalCostIndex = i;
+      } else if (!breakdown[i].isVisible) {
+        hiddenValueTotal += breakdown[i].value;
+        breakdown[i].value = 0; // Set to 0 so total remains same and it's essentially hidden
+      }
+    }
+
+    if (hiddenValueTotal > 0 && metalCostIndex !== -1) {
+      breakdown[metalCostIndex].value =
+        Math.round((breakdown[metalCostIndex].value + hiddenValueTotal) * 100) / 100;
+      // Update the top-level metalCost in the return object
+      metalCost = breakdown[metalCostIndex].value;
+    }
+
     return {
       components: breakdown,
       subtotal: Math.round(subtotal * 100) / 100,
@@ -154,67 +178,33 @@ class PricingCalculationService {
 
   /**
    * Calculate single component value
+   * NOTE: subtotal = running total of all PREVIOUS components (cumulative sum)
    */
   calculateComponentValue(component, context) {
-    const { grossWeight, netWeight, metalRate, metalCost, subtotal } = context;
+    const { netWeight, metalRate, metalCost, subtotal, manualMetalPrice } = context;
+
+    // Metal Cost component - special handling
+    if (component.componentKey === "metal_cost") {
+      if (component.metalPriceMode === "MANUAL" && manualMetalPrice) {
+        return manualMetalPrice * netWeight;
+      }
+      return netWeight * metalRate; // AUTO mode
+    }
 
     switch (component.calculationType) {
       case CALCULATION_TYPES.PER_GRAM:
-        return netWeight * metalRate * (component.value || 1);
+        return netWeight * (component.value || 1);
 
       case CALCULATION_TYPES.PERCENTAGE:
-        let base;
-        switch (component.percentageOf) {
-          case "subtotal":
-            base = subtotal;
-            break;
-          case "grossWeight":
-            base = grossWeight * metalRate;
-            break;
-          case "netWeight":
-            base = netWeight * metalRate;
-            break;
-          case "metalCost":
-          default:
-            base = metalCost;
-        }
+        // subtotal = sum of all previous components (running total)
+        const base = component.percentageOf === "subtotal" ? subtotal : metalCost;
         return (base * component.value) / 100;
 
       case CALCULATION_TYPES.FIXED:
         return component.value || 0;
 
-      case CALCULATION_TYPES.FORMULA:
-        return this.evaluateFormula(component.formula, context);
-
       default:
         return 0;
-    }
-  }
-
-  /**
-   * Evaluate a formula string
-   */
-  evaluateFormula(formula, context) {
-    if (!formula) return 0;
-
-    const { grossWeight, netWeight, metalRate, metalCost, subtotal } = context;
-
-    try {
-      // Convert formula operators and replace variables
-      let jsFormula = formula
-        .replace(/×/g, "*")
-        .replace(/÷/g, "/")
-        .replace(/grossWeight/g, grossWeight)
-        .replace(/netWeight/g, netWeight)
-        .replace(/metalRate/g, metalRate)
-        .replace(/metalCost/g, metalCost)
-        .replace(/subtotal/g, subtotal);
-
-      const result = eval(jsFormula);
-      return isFinite(result) ? result : 0;
-    } catch (error) {
-      console.error(`Formula evaluation error: ${error.message}`);
-      return 0;
     }
   }
 
@@ -227,285 +217,6 @@ class PricingCalculationService {
       const cost = (gem.weight || 0) * (gem.pricePerCarat || 0);
       return sum + cost;
     }, 0);
-  }
-
-  /**
-   * Validate a formula
-   * @param {string} formula - The formula to validate
-   * @param {Object} testValues - Optional test values
-   * @returns {Object} Validation result
-   */
-  validateFormula(formula, testValues = {}) {
-    const validVariables = Object.keys(FORMULA_VARIABLES);
-    const errors = [];
-    const warnings = [];
-
-    if (!formula || formula.trim().length === 0) {
-      return {
-        valid: false,
-        errors: ["Formula cannot be empty"],
-        warnings: [],
-        testResult: null
-      };
-    }
-
-    // Check for unknown variables
-    const variablePattern = /[a-zA-Z_][a-zA-Z0-9_]*/g;
-    const usedVariables = formula.match(variablePattern) || [];
-
-    for (const variable of usedVariables) {
-      if (!validVariables.includes(variable)) {
-        errors.push(`Unknown variable: ${variable}`);
-      }
-    }
-
-    // Check for invalid operators
-    const invalidOperators = formula.match(/[^a-zA-Z0-9_.+\-×÷*/() ]/g);
-    if (invalidOperators) {
-      const unique = [...new Set(invalidOperators)];
-      errors.push(`Invalid characters: ${unique.join(", ")}`);
-    }
-
-    // Check for balanced parentheses
-    let parenCount = 0;
-    for (const char of formula) {
-      if (char === "(") parenCount++;
-      if (char === ")") parenCount--;
-      if (parenCount < 0) {
-        errors.push("Unbalanced parentheses");
-        break;
-      }
-    }
-    if (parenCount !== 0) {
-      errors.push("Unbalanced parentheses");
-    }
-
-    // Test calculation with sample values
-    const defaultTestValues = {
-      grossWeight: testValues.grossWeight ?? 10,
-      netWeight: testValues.netWeight ?? 9.5,
-      metalRate: testValues.metalRate ?? 5000,
-      metalCost: testValues.metalCost ?? 47500,
-      subtotal: testValues.subtotal ?? 50000
-    };
-
-    // Recalculate metalCost if not provided
-    if (!testValues.metalCost) {
-      defaultTestValues.metalCost =
-        defaultTestValues.netWeight * defaultTestValues.metalRate;
-    }
-
-    let testResult = null;
-    let breakdown = [];
-
-    if (errors.length === 0) {
-      try {
-        // Convert and evaluate
-        let jsFormula = formula.replace(/×/g, "*").replace(/÷/g, "/");
-
-        // Store intermediate steps for breakdown
-        const steps = [];
-
-        // Replace variables with values
-        for (const [variable, value] of Object.entries(defaultTestValues)) {
-          if (jsFormula.includes(variable)) {
-            steps.push({ variable, value });
-            jsFormula = jsFormula.replace(new RegExp(variable, "g"), value);
-          }
-        }
-
-        testResult = eval(jsFormula);
-
-        if (isNaN(testResult)) {
-          errors.push("Formula produces NaN (Not a Number)");
-        } else if (!isFinite(testResult)) {
-          errors.push("Formula produces Infinity (possible division by zero)");
-        } else if (testResult < 0) {
-          warnings.push("Formula produces negative value");
-        }
-
-        // Generate step-by-step breakdown
-        breakdown = this.generateFormulaBreakdown(formula, defaultTestValues);
-      } catch (error) {
-        errors.push(`Syntax error: ${error.message}`);
-      }
-    }
-
-    // Test edge cases
-    if (errors.length === 0) {
-      const edgeCaseResults = this.testFormulaEdgeCases(formula);
-      warnings.push(...edgeCaseResults.warnings);
-      if (edgeCaseResults.errors.length > 0) {
-        errors.push(...edgeCaseResults.errors);
-      }
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors,
-      warnings,
-      testResult: errors.length === 0 ? Math.round(testResult * 100) / 100 : null,
-      testValues: defaultTestValues,
-      breakdown
-    };
-  }
-
-  /**
-   * Generate step-by-step formula breakdown
-   */
-  generateFormulaBreakdown(formula, values) {
-    const steps = [];
-    let currentFormula = formula;
-
-    // Replace operators for display
-    currentFormula = currentFormula.replace(/×/g, " × ").replace(/÷/g, " ÷ ");
-
-    steps.push({
-      step: "Original formula",
-      expression: currentFormula
-    });
-
-    // Replace each variable
-    let evalFormula = formula.replace(/×/g, "*").replace(/÷/g, "/");
-
-    for (const [variable, value] of Object.entries(values)) {
-      if (evalFormula.includes(variable)) {
-        const prevFormula = currentFormula;
-        currentFormula = currentFormula.replace(
-          new RegExp(variable, "g"),
-          value.toString()
-        );
-        evalFormula = evalFormula.replace(new RegExp(variable, "g"), value);
-
-        steps.push({
-          step: `Substitute ${variable}`,
-          expression: currentFormula,
-          note: `${variable} = ${value}`
-        });
-      }
-    }
-
-    // Calculate final result
-    try {
-      const result = eval(evalFormula);
-      steps.push({
-        step: "Final result",
-        expression: `= ${Math.round(result * 100) / 100}`,
-        value: Math.round(result * 100) / 100
-      });
-    } catch (e) {
-      steps.push({
-        step: "Error",
-        expression: e.message
-      });
-    }
-
-    return steps;
-  }
-
-  /**
-   * Test formula with edge cases
-   */
-  testFormulaEdgeCases(formula) {
-    const warnings = [];
-    const errors = [];
-
-    // Test with zero values
-    const zeroValues = {
-      grossWeight: 0,
-      netWeight: 0,
-      metalRate: 0,
-      metalCost: 0,
-      subtotal: 0
-    };
-
-    try {
-      let jsFormula = formula
-        .replace(/×/g, "*")
-        .replace(/÷/g, "/");
-
-      for (const [variable, value] of Object.entries(zeroValues)) {
-        jsFormula = jsFormula.replace(new RegExp(variable, "g"), value);
-      }
-
-      const result = eval(jsFormula);
-
-      if (!isFinite(result)) {
-        errors.push("Division by zero when inputs are zero");
-      }
-    } catch (e) {
-      warnings.push(`Edge case test failed: ${e.message}`);
-    }
-
-    // Test with very large values
-    const largeValues = {
-      grossWeight: 1000,
-      netWeight: 999,
-      metalRate: 100000,
-      metalCost: 99900000,
-      subtotal: 100000000
-    };
-
-    try {
-      let jsFormula = formula
-        .replace(/×/g, "*")
-        .replace(/÷/g, "/");
-
-      for (const [variable, value] of Object.entries(largeValues)) {
-        jsFormula = jsFormula.replace(new RegExp(variable, "g"), value);
-      }
-
-      const result = eval(jsFormula);
-
-      if (!isFinite(result)) {
-        warnings.push("Formula may overflow with large values");
-      }
-    } catch (e) {
-      warnings.push(`Large value test failed: ${e.message}`);
-    }
-
-    return { warnings, errors };
-  }
-
-  /**
-   * Parse formula chips into formula string
-   */
-  parseFormulaChips(chips) {
-    return chips.join(" ");
-  }
-
-  /**
-   * Convert formula string to chips
-   */
-  formulaToChips(formula) {
-    if (!formula) return [];
-
-    // Split on operators while keeping them
-    const tokens = formula
-      .replace(/×/g, " × ")
-      .replace(/÷/g, " ÷ ")
-      .replace(/\+/g, " + ")
-      .replace(/-/g, " - ")
-      .replace(/\(/g, " ( ")
-      .replace(/\)/g, " ) ")
-      .split(/\s+/)
-      .filter((t) => t.length > 0);
-
-    return tokens;
-  }
-
-  /**
-   * Get available variables for formula builder
-   */
-  getFormulaVariables() {
-    return Object.entries(FORMULA_VARIABLES).map(([key, description]) => ({
-      key,
-      description,
-      displayName: key
-        .replace(/([A-Z])/g, " $1")
-        .replace(/^./, (str) => str.toUpperCase())
-        .trim()
-    }));
   }
 
   /**

@@ -37,6 +37,7 @@ const systemComponents = [
     description: "Base metal cost calculated from net weight and metal rate",
     calculationType: CALCULATION_TYPES.PER_GRAM,
     defaultValue: 1, // Multiplier (1 = netWeight × metalRate)
+    metalPriceMode: "AUTO", // AUTO uses system rate, MANUAL allows admin override
     isSystemComponent: true,
     allowsFreeze: false, // Metal cost cannot be frozen (always uses live rate)
     isActive: true,
@@ -60,17 +61,15 @@ const systemComponents = [
     name: "Wastage Charges",
     key: "wastage_charges",
     description: "Material wastage during manufacturing",
-    // Default changed to PERCENTAGE for simpler admin UX (5% of subtotal)
     calculationType: CALCULATION_TYPES.PERCENTAGE,
-    defaultValue: 5, // 5%
-    percentageOf: "subtotal",
+    defaultValue: 5, // 5% of metalCost
+    percentageOf: "metalCost",
     isSystemComponent: true,
     allowsFreeze: true,
     isActive: true,
     isVisible: true,
     sortOrder: 3
   },
-
   {
     name: "Hallmarking Charges",
     key: "hallmarking",
@@ -98,7 +97,7 @@ const systemComponents = [
   {
     name: "GST",
     key: "gst",
-    description: "Goods and Services Tax (18%)",
+    description: "Goods and Services Tax (3% for gold/silver jewelry)",
     calculationType: CALCULATION_TYPES.PERCENTAGE,
     defaultValue: 3, // 3% GST for gold/silver jewelry
     percentageOf: "subtotal",

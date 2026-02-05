@@ -89,18 +89,26 @@ const productPricingConfigSchema = new mongoose.Schema(
           enum: Object.values(CALCULATION_TYPES)
         },
         value: Number,
-        formula: String,
-        formulaChips: [String],
         percentageOf: {
           type: String,
-          enum: ["metalCost", "subtotal", "grossWeight", "netWeight"]
+          enum: ["metalCost", "subtotal"]
+        },
+        // Metal price mode for metal_cost component (AUTO or MANUAL)
+        metalPriceMode: {
+          type: String,
+          enum: ["AUTO", "MANUAL", null],
+          default: null
+        },
+        // Manual metal price per gram (used when metalPriceMode is MANUAL)
+        manualMetalPrice: {
+          type: Number,
+          default: null
         },
         // Freeze state (reason optional for product-level)
         isFrozen: { type: Boolean, default: false },
         frozenValue: Number,
         originalCalculationType: String,
         originalValue: Number,
-        originalFormula: String,
         frozenAt: Date,
         metalRateAtFreeze: Number,
         freezeReason: String,
@@ -501,11 +509,11 @@ productSchema.methods.calculatePrice = async function () {
  * Helper: Calculate breakdown from config (for CUSTOM_DYNAMIC)
  */
 productSchema.methods._calculateBreakdownFromConfig = function (config, context) {
-  const { grossWeight, netWeight, metalRate } = context;
-  const metalCost = netWeight * metalRate;
+  const { netWeight, metalRate } = context;
 
   const breakdown = [];
   let subtotal = 0;
+  let metalCost = 0;
 
   const components = config.components || [];
   const sortedComponents = [...components].sort(
@@ -520,57 +528,33 @@ productSchema.methods._calculateBreakdownFromConfig = function (config, context)
     if (component.isFrozen) {
       value = component.frozenValue;
     } else {
-      switch (component.calculationType) {
-        case "PER_GRAM":
-          value = netWeight * metalRate * (component.value || 1);
-          break;
+      // Special handling for metal_cost component
+      if (component.componentKey === "metal_cost") {
+        if (component.metalPriceMode === "MANUAL" && component.manualMetalPrice) {
+          value = component.manualMetalPrice * netWeight;
+        } else {
+          value = netWeight * metalRate; // AUTO mode
+        }
+        metalCost = value; // Store metalCost for percentage calculations
+      } else {
+        switch (component.calculationType) {
+          case "PER_GRAM":
+            value = netWeight * (component.value || 1);
+            break;
 
-        case "PERCENTAGE":
-          let base;
-          switch (component.percentageOf) {
-            case "subtotal":
-              base = subtotal;
-              break;
-            case "grossWeight":
-              base = grossWeight * metalRate;
-              break;
-            case "netWeight":
-              base = netWeight * metalRate;
-              break;
-            default:
-              base = metalCost;
-          }
-          value = (base * component.value) / 100;
-          break;
+          case "PERCENTAGE":
+            // subtotal = running total of all previous components
+            const base = component.percentageOf === "subtotal" ? subtotal : metalCost;
+            value = (base * component.value) / 100;
+            break;
 
-        case "FIXED":
-          value = component.value;
-          break;
+          case "FIXED":
+            value = component.value;
+            break;
 
-        case "FORMULA":
-          if (!component.formula) {
+          default:
             value = 0;
-          } else {
-            try {
-              let jsFormula = component.formula
-                .replace(/×/g, "*")
-                .replace(/÷/g, "/")
-                .replace(/grossWeight/g, grossWeight)
-                .replace(/netWeight/g, netWeight)
-                .replace(/metalRate/g, metalRate)
-                .replace(/metalCost/g, metalCost)
-                .replace(/subtotal/g, subtotal);
-
-              value = eval(jsFormula);
-              if (!isFinite(value)) value = 0;
-            } catch (error) {
-              value = 0;
-            }
-          }
-          break;
-
-        default:
-          value = 0;
+        }
       }
     }
 
@@ -585,6 +569,26 @@ productSchema.methods._calculateBreakdownFromConfig = function (config, context)
     });
 
     subtotal += value;
+  }
+
+  // Merge hidden components into metal_cost for user view consistency
+  let hiddenValueTotal = 0;
+  let metalCostIndex = -1;
+
+  for (let i = 0; i < breakdown.length; i++) {
+    if (breakdown[i].componentKey === "metal_cost") {
+      metalCostIndex = i;
+    } else if (!breakdown[i].isVisible) {
+      hiddenValueTotal += breakdown[i].value;
+      breakdown[i].value = 0; // Set to 0 so total remains same and it's essentially hidden
+    }
+  }
+
+  if (hiddenValueTotal > 0 && metalCostIndex !== -1) {
+    breakdown[metalCostIndex].value =
+      Math.round((breakdown[metalCostIndex].value + hiddenValueTotal) * 100) / 100;
+    // Update the top-level metalCost in the return object
+    metalCost = breakdown[metalCostIndex].value;
   }
 
   return {

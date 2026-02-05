@@ -17,25 +17,11 @@ router.get(
   priceComponentController.getCalculationTypes
 );
 
-// Get formula variables
-router.get(
-  "/admin/price-components/formula-variables",
-  requireAdminLogin,
-  priceComponentController.getFormulaVariables
-);
-
 // Get system components only
 router.get(
   "/admin/price-components/system",
   requireAdminLogin,
   priceComponentController.getSystemComponents
-);
-
-// Validate formula
-router.post(
-  "/admin/price-components/validate-formula",
-  requireAdminLogin,
-  priceComponentController.validateFormula
 );
 
 // Reorder components

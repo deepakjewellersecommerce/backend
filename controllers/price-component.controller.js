@@ -5,8 +5,7 @@
 
 const {
   PriceComponent,
-  CALCULATION_TYPES,
-  FORMULA_VARIABLES
+  CALCULATION_TYPES
 } = require("../models/price-component.model");
 const pricingCalculationService = require("../services/pricing-calculation.service");
 const { successRes, errorRes, internalServerError } = require("../utility");
@@ -105,9 +104,8 @@ module.exports.createComponent = catchAsync(async (req, res) => {
       description,
       calculationType,
       defaultValue,
-      formula,
-      formulaChips,
       percentageOf,
+      metalPriceMode,
       allowsFreeze,
       isActive,
       isVisible,
@@ -129,27 +127,14 @@ module.exports.createComponent = catchAsync(async (req, res) => {
       return errorRes(res, 400, `Component with key "${key}" already exists`);
     }
 
-    // Validate formula if provided
-    if (calculationType === CALCULATION_TYPES.FORMULA) {
-      if (!formula) {
-        return errorRes(res, 400, "Formula is required for FORMULA calculation type");
-      }
-
-      const validation = pricingCalculationService.validateFormula(formula);
-      if (!validation.valid) {
-        return errorRes(res, 400, `Invalid formula: ${validation.errors.join(", ")}`);
-      }
-    }
-
     const component = await PriceComponent.create({
       name,
       key: key.toLowerCase(),
       description,
       calculationType,
       defaultValue: defaultValue || 0,
-      formula: calculationType === CALCULATION_TYPES.FORMULA ? formula : null,
-      formulaChips: formulaChips || [],
       percentageOf: percentageOf || "metalCost",
+      metalPriceMode: key.toLowerCase() === "metal_cost" ? (metalPriceMode || "AUTO") : null,
       isSystemComponent: false, // Custom components are never system components
       allowsFreeze: allowsFreeze !== false,
       isActive: isActive !== false,
@@ -198,16 +183,6 @@ module.exports.updateComponent = catchAsync(async (req, res) => {
             `Cannot update "${key}" on system components`
           );
         }
-      }
-    }
-
-    // Validate formula if updating
-    if (updates.calculationType === CALCULATION_TYPES.FORMULA ||
-        (component.calculationType === CALCULATION_TYPES.FORMULA && updates.formula)) {
-      const formulaToValidate = updates.formula || component.formula;
-      const validation = pricingCalculationService.validateFormula(formulaToValidate);
-      if (!validation.valid) {
-        return errorRes(res, 400, `Invalid formula: ${validation.errors.join(", ")}`);
       }
     }
 
@@ -274,47 +249,6 @@ module.exports.deleteComponent = catchAsync(async (req, res) => {
     console.error("Error deleting component:", error);
     internalServerError(res, error.message);
   }
-});
-
-/**
- * Validate formula
- * POST /api/admin/price-components/validate-formula
- */
-module.exports.validateFormula = catchAsync(async (req, res) => {
-  try {
-    const { formula, testValues } = req.body;
-
-    if (!formula) {
-      return errorRes(res, 400, "Formula is required");
-    }
-
-    const validation = pricingCalculationService.validateFormula(
-      formula,
-      testValues || {}
-    );
-
-    successRes(res, {
-      ...validation,
-      message: validation.valid ? "Formula is valid" : "Formula validation failed"
-    });
-  } catch (error) {
-    console.error("Error validating formula:", error);
-    internalServerError(res, error.message);
-  }
-});
-
-/**
- * Get formula variables
- * GET /api/admin/price-components/formula-variables
- */
-module.exports.getFormulaVariables = catchAsync(async (req, res) => {
-  const variables = pricingCalculationService.getFormulaVariables();
-
-  successRes(res, {
-    variables,
-    operators: ["+", "-", "×", "÷", "(", ")"],
-    message: "Formula variables retrieved successfully"
-  });
 });
 
 /**
@@ -417,10 +351,9 @@ module.exports.getCalculationTypes = catchAsync(async (req, res) => {
 // Helper function
 function getCalculationTypeDescription(type) {
   const descriptions = {
-    PER_GRAM: "Calculated as: netWeight × metalRate × value",
-    PERCENTAGE: "Calculated as: referenceValue × (value / 100)",
-    FIXED: "Fixed amount in rupees",
-    FORMULA: "Custom formula using available variables"
+    PER_GRAM: "Calculated as: netWeight × value",
+    PERCENTAGE: "Calculated as: base × (value / 100), where base is metalCost or subtotal",
+    FIXED: "Fixed amount in rupees"
   };
   return descriptions[type] || "";
 }
