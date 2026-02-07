@@ -9,14 +9,15 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET, 
 });
 // Upload
-const uploadOnCloudinary = async (file) => {
+const uploadOnCloudinary = async (filePath) => {
   try {
-    console.log("before clound", file);
-    const data = await cloudinary.uploader.upload(file.path);
-    console.log(data, "<<<thsis is data in cloudinary ");
+    console.log("before cloud upload", filePath);
+    const data = await cloudinary.uploader.upload(filePath);
+    console.log(data, "<<<this is data in cloudinary ");
     return data; // Return the full object, not just data.secure_url
   } catch (error) {
-    console.log(error.message);
+    console.log("Cloudinary upload error:", error.message);
+    throw error; // Re-throw to handle in calling function
   }
 };
 const deleteFromCloudinary = async (url) =>{

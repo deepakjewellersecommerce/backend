@@ -210,6 +210,14 @@ module.exports.customizePricing = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error customizing pricing:", error);
+
+    // Return 400 for validation errors, 500 for server errors
+    if (error.message.includes("not found") ||
+        error.message.includes("No pricing configuration") ||
+        error.message.includes("must have pricing configured")) {
+      return errorRes(res, 400, error.message);
+    }
+
     internalServerError(res, error.message);
   }
 });

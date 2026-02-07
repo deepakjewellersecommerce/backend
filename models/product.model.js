@@ -616,7 +616,7 @@ productSchema.methods.customizePricing = async function () {
 
   const pricingConfig = await subcategory.getPricingConfig();
   if (!pricingConfig) {
-    throw new Error("No pricing configuration to clone");
+    throw new Error("No pricing configuration found. The subcategory or its ancestors must have pricing configured before customizing product pricing.");
   }
 
   // Clone the config
