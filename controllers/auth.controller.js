@@ -13,6 +13,8 @@ const catchAsync = require("../utility/catch-async");
 const { User_Order } = require("../models/order.model");
 const { Product } = require("../models/product.model");
 const ProductCategory = require("../models/product_category.model");
+const Category = require("../models/category.model");
+const Subcategory = require("../models/subcategory.model");
 const Constant = require("../models/constant.model");
 const JWT_SECRET_ADMIN = process.env.JWT_SECRET_ADMIN;
 const JWT_SECRET_USER = process.env.JWT_SECRET_USER;
@@ -341,50 +343,141 @@ module.exports.firebaseLogin_post = catchAsync(async (req, res) => {
 });
 
 module.exports.dashboardData = catchAsync(async (req, res) => {
-  const orderMetrics = [
-    { title: "Total Orders", value: "0." },
-    { title: "Complete Orders", value: "0" },
-    { title: "Pending Orders", value: "0" },
-    { title: "Canceled Orders", value: "0" },
-  ];
+  // Helper function to format currency
+  const formatCurrency = (amount) => {
+    return new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      minimumFractionDigits: 0,
+    }).format(amount || 0);
+  };
 
-  const otherMetrics = [
-    { title: "Total Products", value: "0" },
-    { title: "Total Users", value: "0" },
-    { title: "Total Categories", value: "0" },
-  ];
+  // Get date ranges for calculations
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
 
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const firstDayOfNextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+
+  // Order Metrics
   const TotalOrders = await User_Order.countDocuments({});
   const CompleteOrders = await User_Order.countDocuments({
     order_status: "DELIVERED",
   });
   const PendingOrders = await User_Order.countDocuments({
-    $or: [
+    $and: [
       { order_status: { $ne: "DELIVERED" } },
       { order_status: { $ne: "CANCELLED BY ADMIN" } },
     ],
   });
-
   const CanceledOrders = await User_Order.countDocuments({
     order_status: "CANCELLED BY ADMIN",
   });
 
+  const orderMetrics = [
+    { title: "Total Orders", value: TotalOrders.toString() },
+    { title: "Complete Orders", value: CompleteOrders.toString() },
+    { title: "Pending Orders", value: PendingOrders.toString() },
+    { title: "Canceled Orders", value: CanceledOrders.toString() },
+  ];
+
+  // Revenue Metrics
+  const todayRevenue = await User_Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: today, $lt: tomorrow },
+        order_status: { $ne: "CANCELLED BY ADMIN" }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$total_price" }
+      }
+    }
+  ]);
+
+  const monthRevenue = await User_Order.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: firstDayOfMonth, $lt: firstDayOfNextMonth },
+        order_status: { $ne: "CANCELLED BY ADMIN" }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$total_price" }
+      }
+    }
+  ]);
+
+  const totalRevenue = await User_Order.aggregate([
+    {
+      $match: {
+        order_status: { $ne: "CANCELLED BY ADMIN" }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: "$total_price" }
+      }
+    }
+  ]);
+
+  const avgOrderValue = CompleteOrders > 0 && totalRevenue[0]
+    ? totalRevenue[0].total / CompleteOrders
+    : 0;
+
+  const revenueMetrics = [
+    { title: "Today's Revenue", value: formatCurrency(todayRevenue[0]?.total || 0) },
+    { title: "This Month", value: formatCurrency(monthRevenue[0]?.total || 0) },
+    { title: "Total Revenue", value: formatCurrency(totalRevenue[0]?.total || 0) },
+    { title: "Avg Order Value", value: formatCurrency(avgOrderValue) },
+  ];
+
+  // Product Metrics
   const TotalProducts = await Product.countDocuments();
+  const ActiveProducts = await Product.countDocuments({ isActive: true });
+  const OutOfStockProducts = await Product.countDocuments({
+    $expr: { $lte: ["$availableStock", 0] }
+  });
+  const FeaturedProducts = await Product.countDocuments({ isFeatured: true });
+
+  const productMetrics = [
+    { title: "Total Products", value: TotalProducts.toString() },
+    { title: "Active Products", value: ActiveProducts.toString() },
+    { title: "Out of Stock", value: OutOfStockProducts.toString() },
+    { title: "Featured Products", value: FeaturedProducts.toString() },
+  ];
+
+  // Customer & Catalog Metrics
   const TotalUsers = await User.countDocuments({});
-  const TotalCategories = await ProductCategory.countDocuments({});
+  const NewUsersThisMonth = await User.countDocuments({
+    createdAt: { $gte: firstDayOfMonth, $lt: firstDayOfNextMonth }
+  });
 
-  orderMetrics[0].value = TotalOrders;
-  orderMetrics[1].value = CompleteOrders;
-  orderMetrics[2].value = PendingOrders;
-  orderMetrics[3].value = CanceledOrders;
+  // Use the new Category model from category hierarchy system
+  const TotalCategories = await Category.countDocuments({});
 
-  otherMetrics[0].value = TotalProducts;
-  otherMetrics[1].value = TotalUsers;
-  otherMetrics[2].value = TotalCategories;
+  // Get subcategory count
+  const TotalSubcategories = await Subcategory.countDocuments({});
+
+  const customerMetrics = [
+    { title: "Total Customers", value: TotalUsers.toString() },
+    { title: "New This Month", value: NewUsersThisMonth.toString() },
+    { title: "Total Categories", value: TotalCategories.toString() },
+    { title: "Total Subcategories", value: TotalSubcategories.toString() },
+  ];
 
   return successRes(res, {
     orderMetrics,
-    otherMetrics,
+    revenueMetrics,
+    productMetrics,
+    customerMetrics,
   });
 });
 module.exports.updateConstansts = catchAsync(async (req, res) => {
