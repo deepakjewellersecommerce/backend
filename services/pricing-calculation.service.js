@@ -164,6 +164,7 @@ class PricingCalculationService {
     if (hiddenValueTotal > 0 && metalCostIndex !== -1) {
       breakdown[metalCostIndex].value =
         Math.round((breakdown[metalCostIndex].value + hiddenValueTotal) * 100) / 100;
+      breakdown[metalCostIndex].componentName = "Unit Cost";
       // Update the top-level metalCost in the return object
       metalCost = breakdown[metalCostIndex].value;
     }
