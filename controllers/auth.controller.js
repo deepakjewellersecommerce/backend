@@ -343,6 +343,8 @@ module.exports.firebaseLogin_post = catchAsync(async (req, res) => {
 });
 
 module.exports.dashboardData = catchAsync(async (req, res) => {
+  const { startDate, endDate } = req.query;
+
   // Helper function to format currency
   const formatCurrency = (amount) => {
     return new Intl.NumberFormat('en-IN', {
@@ -352,7 +354,19 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
     }).format(amount || 0);
   };
 
-  // Get date ranges for calculations
+  // Build date filter if startDate/endDate are provided
+  const dateFilter = {};
+  if (startDate || endDate) {
+    dateFilter.createdAt = {};
+    if (startDate) dateFilter.createdAt.$gte = new Date(startDate);
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      dateFilter.createdAt.$lte = end;
+    }
+  }
+
+  // Get date ranges for default revenue labels (today / this month)
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
@@ -361,18 +375,22 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const firstDayOfNextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
 
-  // Order Metrics
-  const TotalOrders = await User_Order.countDocuments({});
+  // Order Metrics — filtered by date range when provided
+  const orderDateFilter = { ...dateFilter };
+  const TotalOrders = await User_Order.countDocuments(orderDateFilter);
   const CompleteOrders = await User_Order.countDocuments({
+    ...orderDateFilter,
     order_status: "DELIVERED",
   });
   const PendingOrders = await User_Order.countDocuments({
+    ...orderDateFilter,
     $and: [
       { order_status: { $ne: "DELIVERED" } },
       { order_status: { $ne: "CANCELLED BY ADMIN" } },
     ],
   });
   const CanceledOrders = await User_Order.countDocuments({
+    ...orderDateFilter,
     order_status: "CANCELLED BY ADMIN",
   });
 
@@ -383,63 +401,29 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
     { title: "Canceled Orders", value: CanceledOrders.toString() },
   ];
 
-  // Revenue Metrics
-  const todayRevenue = await User_Order.aggregate([
-    {
-      $match: {
-        createdAt: { $gte: today, $lt: tomorrow },
-        order_status: { $ne: "CANCELLED BY ADMIN" }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: "$total_price" }
-      }
-    }
+  // Revenue Metrics — always scoped to dateFilter
+  const revenueMatch = {
+    ...dateFilter,
+    order_status: { $ne: "CANCELLED BY ADMIN" }
+  };
+
+  const [revenueAgg] = await User_Order.aggregate([
+    { $match: revenueMatch },
+    { $group: { _id: null, total: { $sum: "$total_price" }, count: { $sum: 1 } } }
   ]);
 
-  const monthRevenue = await User_Order.aggregate([
-    {
-      $match: {
-        createdAt: { $gte: firstDayOfMonth, $lt: firstDayOfNextMonth },
-        order_status: { $ne: "CANCELLED BY ADMIN" }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: "$total_price" }
-      }
-    }
-  ]);
-
-  const totalRevenue = await User_Order.aggregate([
-    {
-      $match: {
-        order_status: { $ne: "CANCELLED BY ADMIN" }
-      }
-    },
-    {
-      $group: {
-        _id: null,
-        total: { $sum: "$total_price" }
-      }
-    }
-  ]);
-
-  const avgOrderValue = CompleteOrders > 0 && totalRevenue[0]
-    ? totalRevenue[0].total / CompleteOrders
-    : 0;
+  const periodTotal = revenueAgg?.total || 0;
+  const periodCount = revenueAgg?.count || 0;
+  const periodAvg = periodCount > 0 ? periodTotal / periodCount : 0;
 
   const revenueMetrics = [
-    { title: "Today's Revenue", value: formatCurrency(todayRevenue[0]?.total || 0) },
-    { title: "This Month", value: formatCurrency(monthRevenue[0]?.total || 0) },
-    { title: "Total Revenue", value: formatCurrency(totalRevenue[0]?.total || 0) },
-    { title: "Avg Order Value", value: formatCurrency(avgOrderValue) },
+    { title: "Revenue", value: formatCurrency(periodTotal) },
+    { title: "Orders (Revenue)", value: periodCount.toString() },
+    { title: "Total Revenue", value: formatCurrency(periodTotal) },
+    { title: "Avg Order Value", value: formatCurrency(periodAvg) },
   ];
 
-  // Product Metrics
+  // Product Metrics (not date-dependent — always show current state)
   const TotalProducts = await Product.countDocuments();
   const ActiveProducts = await Product.countDocuments({ isActive: true });
   const OutOfStockProducts = await Product.countDocuments({
@@ -454,11 +438,13 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
     { title: "Featured Products", value: FeaturedProducts.toString() },
   ];
 
-  // Customer & Catalog Metrics
+  // Customer & Catalog Metrics — scoped to date filter when provided
   const TotalUsers = await User.countDocuments({});
-  const NewUsersThisMonth = await User.countDocuments({
-    createdAt: { $gte: firstDayOfMonth, $lt: firstDayOfNextMonth }
-  });
+  const NewUsers = await User.countDocuments(
+    startDate || endDate
+      ? dateFilter
+      : { createdAt: { $gte: firstDayOfMonth, $lt: firstDayOfNextMonth } }
+  );
 
   // Use the new Category model from category hierarchy system
   const TotalCategories = await Category.countDocuments({});
@@ -468,7 +454,7 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
 
   const customerMetrics = [
     { title: "Total Customers", value: TotalUsers.toString() },
-    { title: "New This Month", value: NewUsersThisMonth.toString() },
+    { title: "New Users", value: NewUsers.toString() },
     { title: "Total Categories", value: TotalCategories.toString() },
     { title: "Total Subcategories", value: TotalSubcategories.toString() },
   ];
