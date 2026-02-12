@@ -14,11 +14,10 @@ const cacheService = require("./cache.service");
  */
 class MetalPriceService {
   constructor() {
-    // API Configuration - Uses INR-native API
-    // Recommended: goldapi.io, metals-api.com, or livegoldprices.in
+    // API Configuration - Uses metals.dev API
     this.apiUrl =
       process.env.METAL_PRICE_API_URL ||
-      "https://www.goldapi.io/api";
+      "https://api.metals.dev/v1/latest";
     this.apiKey = process.env.METAL_PRICE_API_KEY || "";
 
     // Update interval (24 hours for cron, 1 hour for cache)
@@ -74,36 +73,42 @@ class MetalPriceService {
     }
 
     try {
-      const symbol = this.metalSymbols[metalType];
-
-      // goldapi.io endpoint format
-      const response = await axios.get(`${this.apiUrl}/${symbol}/INR`, {
-        headers: {
-          "x-access-token": this.apiKey,
-          "Content-Type": "application/json"
+      // metals.dev endpoint format
+      const response = await axios.get(this.apiUrl, {
+        params: {
+          api_key: this.apiKey,
+          currency: "INR",
+          unit: "g"
         },
         timeout: 10000
       });
 
-      if (response.data && response.data.price_gram_24k) {
-        // API returns price per gram directly
-        let pricePerGram;
+      if (response.data && response.data.status === "success" && response.data.data && response.data.data.metals) {
+        const apiData = response.data.data.metals;
+        let pricePerGram = null;
 
-        if (symbol === "XAU") {
-          // Gold - use price_gram_24k or price_gram_22k
-          pricePerGram =
-            metalType === METAL_TYPES.GOLD_22K
-              ? response.data.price_gram_22k || response.data.price_gram_24k * 0.9167
-              : response.data.price_gram_24k;
-        } else if (symbol === "XAG") {
-          // Silver
-          pricePerGram = response.data.price_gram_24k;
-          if (metalType === METAL_TYPES.SILVER_925) {
-            pricePerGram *= 0.925;
-          }
-        } else {
-          // Platinum
-          pricePerGram = response.data.price_gram_24k;
+        // Map metals.dev response to our metal types
+        switch (metalType) {
+          case METAL_TYPES.GOLD_24K:
+            pricePerGram = apiData.gold;
+            break;
+          case METAL_TYPES.GOLD_22K:
+            pricePerGram = apiData.gold ? apiData.gold * (22 / 24) : null;
+            break;
+          case METAL_TYPES.SILVER_999:
+            pricePerGram = apiData.silver;
+            break;
+          case METAL_TYPES.SILVER_925:
+            pricePerGram = apiData.silver ? apiData.silver * 0.925 : null;
+            break;
+          case METAL_TYPES.PLATINUM:
+            pricePerGram = apiData.platinum;
+            break;
+        }
+
+        if (pricePerGram === null || pricePerGram === undefined) {
+          console.warn(`Metal price for ${metalType} not found in API response`);
+          return null;
         }
 
         return {
@@ -112,21 +117,7 @@ class MetalPriceService {
         };
       }
 
-      // Fallback: If API returns price per ounce
-      if (response.data && response.data.price) {
-        const pricePerOunce = response.data.price;
-        let pricePerGram = pricePerOunce / this.TROY_OUNCE_TO_GRAM;
-
-        // Apply purity factor
-        pricePerGram *= this.purityFactors[metalType];
-
-        return {
-          pricePerGram: Math.round(pricePerGram * 100) / 100,
-          source: PRICE_SOURCES.API
-        };
-      }
-
-      console.error("Invalid API response format:", response.data);
+      console.error("Invalid API response format from metals.dev:", response.data);
       return null;
     } catch (error) {
       console.error(`Error fetching ${metalType} price from API:`, error.message);
@@ -232,17 +223,65 @@ class MetalPriceService {
       errors: []
     };
 
-    for (const metalType of Object.values(METAL_TYPES)) {
-      try {
-        await this.fetchAndUpdateSingle(metalType, updatedBy);
-        results.updated.push(metalType);
-      } catch (error) {
-        results.failed.push(metalType);
-        results.errors.push({
-          metalType,
-          error: error.message
-        });
+    try {
+      // Fetch all prices once from metals.dev
+      const response = await axios.get(this.apiUrl, {
+        params: {
+          api_key: this.apiKey,
+          currency: "INR",
+          unit: "g"
+        },
+        timeout: 10000
+      });
+
+      if (response.data && response.data.status === "success" && response.data.data && response.data.data.metals) {
+        const apiData = response.data.data.metals;
+
+        for (const metalType of Object.values(METAL_TYPES)) {
+          let pricePerGram = null;
+
+          switch (metalType) {
+            case METAL_TYPES.GOLD_24K:
+              pricePerGram = apiData.gold;
+              break;
+            case METAL_TYPES.GOLD_22K:
+              pricePerGram = apiData.gold ? apiData.gold * (22 / 24) : null;
+              break;
+            case METAL_TYPES.SILVER_999:
+              pricePerGram = apiData.silver;
+              break;
+            case METAL_TYPES.SILVER_925:
+              pricePerGram = apiData.silver ? apiData.silver * 0.925 : null;
+              break;
+            case METAL_TYPES.PLATINUM:
+              pricePerGram = apiData.platinum;
+              break;
+          }
+
+          if (pricePerGram) {
+            await this.updatePrice(
+              metalType,
+              Math.round(pricePerGram * 100) / 100,
+              PRICE_SOURCES.API,
+              updatedBy
+            );
+            results.updated.push(metalType);
+          } else {
+            results.failed.push(metalType);
+            results.errors.push({
+              metalType,
+              error: "Price not found in bulk API response"
+            });
+          }
+        }
+      } else {
+        throw new Error("Invalid bulk API response format");
       }
+    } catch (error) {
+      console.error("Bulk API fetch failed:", error.message);
+      results.errors.push({
+        general: error.message
+      });
     }
 
     return results;

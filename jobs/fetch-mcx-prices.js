@@ -7,6 +7,7 @@
  */
 
 const cron = require("node-cron");
+const axios = require("axios");
 const MetalGroup = require("../models/metal-group.model");
 const Material = require("../models/material.model");
 
@@ -24,17 +25,52 @@ const fetchMCXPrices = async () => {
     console.log(`[${new Date().toISOString()}] Fetching MCX Metal Prices...`);
     console.log("═".repeat(60));
 
-    // Fetch from Metal Price API
-    // Example: https://api.metals.live/v1/spot/metals?currencies=inr
-    // Or use your preferred metal price API
+    // API Configuration
+    const apiKey = process.env.METAL_PRICE_API_KEY;
+    const apiUrl = `https://api.metals.dev/v1/latest?api_key=${apiKey}&currency=INR&unit=g`;
 
-    const metalPrices = {
-      gold: 15526.80, // Per gram in INR
-      silver: 250.0,
-      platinum: 6114.10
+    if (!apiKey) {
+      console.warn("⚠️  METAL_PRICE_API_KEY not configured in .env");
+      console.warn("   Falling back to manual mock prices for safety.");
+    }
+
+    let metalPrices = {
+      gold: 0,
+      silver: 0,
+      platinum: 0
     };
 
-    console.log("\n📊 Latest MCX Prices (per gram, INR):");
+    if (apiKey) {
+      try {
+        const response = await axios.get(apiUrl, { timeout: 15000 });
+        
+        if (response.data && response.data.status === "success" && response.data.data && response.data.data.metals) {
+          const apiData = response.data.data.metals;
+          metalPrices = {
+            gold: apiData.gold || 0,
+            silver: apiData.silver || 0,
+            platinum: apiData.platinum || 0
+          };
+          console.log("✅ Successfully fetched prices from metals.dev");
+        } else {
+          throw new Error("Invalid API response format");
+        }
+      } catch (apiError) {
+        console.error("❌ API Fetch Failed:", apiError.message);
+        console.log("   Falling back to last known prices or defaults...");
+        // If API fails, we exit without updating to avoid setting prices to 0
+        return;
+      }
+    } else {
+      // Fallback for demo/development if no key
+      metalPrices = {
+        gold: 15526.80,
+        silver: 250.0,
+        platinum: 6114.10
+      };
+    }
+
+    console.log("\n📊 Latest Prices (per gram, INR):");
     console.log("─".repeat(60));
     console.log(`  Gold:     ₹${metalPrices.gold.toFixed(2)}/g`);
     console.log(`  Silver:   ₹${metalPrices.silver.toFixed(2)}/g`);
