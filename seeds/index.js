@@ -208,12 +208,12 @@ const runAllSeeds = async () => {
 
     console.log("Database Summary:");
     console.log("─".repeat(40));
-    console.log(`  Materials:        ${await Material.countDocuments()}`);
-    console.log(`  Genders:          ${await Gender.countDocuments()}`);
-    console.log(`  Items:            ${await Item.countDocuments()}`);
-    console.log(`  Categories:       ${await Category.countDocuments()}`);
-    console.log(`  Price Components: ${await PriceComponent.countDocuments()}`);
-    console.log(`  Metal Prices:     ${await MetalPrice.countDocuments()}`);
+    console.log(`  Materials:        ${await Material.countDocuments({})}`);
+    console.log(`  Genders:          ${await Gender.countDocuments({})}`);
+    console.log(`  Items:            ${await Item.countDocuments({})}`);
+    console.log(`  Categories:       ${await Category.countDocuments({})}`);
+    console.log(`  Price Components: ${await PriceComponent.countDocuments({})}`);
+    console.log(`  Metal Prices:     ${await MetalPrice.countDocuments({})}`);
     console.log("─".repeat(40));
 
   } catch (error) {

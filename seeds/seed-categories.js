@@ -307,10 +307,10 @@ const runSeeds = async () => {
     console.log("========================================\n");
 
     // Summary
-    const materialCount = await Material.countDocuments();
-    const genderCount = await Gender.countDocuments();
-    const itemCount = await Item.countDocuments();
-    const categoryCount = await Category.countDocuments();
+    const materialCount = await Material.countDocuments({});
+    const genderCount = await Gender.countDocuments({});
+    const itemCount = await Item.countDocuments({});
+    const categoryCount = await Category.countDocuments({});
 
     console.log("Summary:");
     console.log(`  Materials: ${materialCount}`);
