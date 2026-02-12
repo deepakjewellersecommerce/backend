@@ -1,17 +1,165 @@
 /**
  * Category Hierarchy Controller
- * Handles CRUD for Levels 1-4: Material, Gender, Item, Category
+ * Handles CRUD for Metal Groups and Levels 1-4: Material, Gender, Item, Category
  */
 
+const MetalGroup = require("../models/metal-group.model");
 const Material = require("../models/material.model");
 const Gender = require("../models/gender.model");
 const Item = require("../models/item.model");
 const Category = require("../models/category.model");
 const { Product } = require("../models/product.model");
 const Subcategory = require("../models/subcategory.model.js");
-const { METAL_TYPES } = require("../models/metal-price.model");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
+
+// ==================== METAL GROUPS (Base Metals) ====================
+
+/**
+ * Get all metal groups
+ * GET /api/admin/categories/metal-groups
+ */
+module.exports.getAllMetalGroups = catchAsync(async (req, res) => {
+  try {
+    const { includeInactive = false } = req.query;
+
+    const query = {};
+    if (!includeInactive || includeInactive === "false") {
+      query.isActive = true;
+    }
+
+    const metalGroups = await MetalGroup.find(query).sort({ sortOrder: 1, name: 1 });
+
+    successRes(res, {
+      metalGroups,
+      message: "Metal groups retrieved successfully"
+    });
+  } catch (error) {
+    console.error("Error getting metal groups:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Get single metal group
+ * GET /api/admin/categories/metal-groups/:id
+ */
+module.exports.getMetalGroup = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const metalGroup = await MetalGroup.findById(id);
+
+    if (!metalGroup) {
+      return errorRes(res, 404, "Metal group not found");
+    }
+
+    // Get materials for this metal group
+    const materials = await Material.find({ metalGroup: id, isActive: true }).sort({
+      sortOrder: 1
+    });
+
+    successRes(res, {
+      metalGroup,
+      materials,
+      message: "Metal group retrieved successfully"
+    });
+  } catch (error) {
+    console.error("Error getting metal group:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Update metal group (MCX price or premium)
+ * PUT /api/admin/categories/metal-groups/:id
+ */
+module.exports.updateMetalGroup = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { mcxPrice, premium, isActive, isAutoUpdate, sortOrder } = req.body;
+
+    const metalGroup = await MetalGroup.findById(id);
+    if (!metalGroup) {
+      return errorRes(res, 404, "Metal group not found");
+    }
+
+    // Update allowed fields
+    if (mcxPrice !== undefined) {
+      metalGroup.mcxPrice = mcxPrice;
+      metalGroup.lastFetched = new Date();
+    }
+    if (premium !== undefined) {
+      metalGroup.premium = premium;
+    }
+    if (isActive !== undefined) {
+      metalGroup.isActive = isActive;
+    }
+    if (isAutoUpdate !== undefined) {
+      metalGroup.isAutoUpdate = isAutoUpdate;
+    }
+    if (sortOrder !== undefined) {
+      metalGroup.sortOrder = sortOrder;
+    }
+
+    // Base price will be auto-calculated by pre-save hook
+    await metalGroup.save();
+
+    // Recalculate prices for all materials in this group
+    if (mcxPrice !== undefined || premium !== undefined) {
+      await Material.recalculatePricesForMetalGroup(id);
+    }
+
+    successRes(res, {
+      metalGroup,
+      message: "Metal group updated successfully"
+    });
+  } catch (error) {
+    console.error("Error updating metal group:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Update premium for metal group
+ * PUT /api/admin/categories/metal-groups/:id/premium
+ */
+module.exports.updateMetalGroupPremium = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { premium } = req.body;
+
+    if (premium === undefined || premium < 0) {
+      return errorRes(res, 400, "Valid premium value is required");
+    }
+
+    const metalGroup = await MetalGroup.findById(id);
+    if (!metalGroup) {
+      return errorRes(res, 404, "Metal group not found");
+    }
+
+    const oldPremium = metalGroup.premium;
+    const oldBasePrice = metalGroup.basePrice;
+
+    metalGroup.updatePremium(premium);
+    await metalGroup.save();
+
+    // Recalculate all material prices
+    const updatedMaterials = await Material.recalculatePricesForMetalGroup(id);
+
+    successRes(res, {
+      metalGroup,
+      affectedMaterials: updatedMaterials.length,
+      changes: {
+        premium: { old: oldPremium, new: metalGroup.premium },
+        basePrice: { old: oldBasePrice, new: metalGroup.basePrice }
+      },
+      message: `Premium updated and ${updatedMaterials.length} material prices recalculated`
+    });
+  } catch (error) {
+    console.error("Error updating premium:", error);
+    internalServerError(res, error.message);
+  }
+});
 
 // ==================== MATERIALS (Level 1) ====================
 
@@ -21,18 +169,28 @@ const catchAsync = require("../utility/catch-async");
  */
 module.exports.getAllMaterials = catchAsync(async (req, res) => {
   try {
-    const { includeInactive = false } = req.query;
+    const { includeInactive = false, metalGroupId } = req.query;
 
     const query = {};
     if (!includeInactive || includeInactive === "false") {
       query.isActive = true;
     }
+    if (metalGroupId) {
+      query.metalGroup = metalGroupId;
+    }
 
-    const materials = await Material.find(query).sort({ sortOrder: 1, name: 1 });
+    const materials = await Material.find(query)
+      .populate("metalGroup", "name symbol mcxPrice premium basePrice")
+      .sort({ sortOrder: 1, name: 1 });
+
+    // Get all metal groups for dropdown
+    const metalGroups = await MetalGroup.find({ isActive: true }).sort({
+      sortOrder: 1
+    });
 
     successRes(res, {
       materials,
-      metalTypes: Object.values(METAL_TYPES),
+      metalGroups, // Replace metalTypes with metalGroups
       message: "Materials retrieved successfully"
     });
   } catch (error) {
@@ -48,7 +206,10 @@ module.exports.getAllMaterials = catchAsync(async (req, res) => {
 module.exports.getMaterial = catchAsync(async (req, res) => {
   try {
     const { id } = req.params;
-    const material = await Material.findById(id);
+    const material = await Material.findById(id).populate(
+      "metalGroup",
+      "name symbol mcxPrice premium basePrice"
+    );
 
     if (!material) {
       return errorRes(res, 404, "Material not found");
@@ -56,6 +217,7 @@ module.exports.getMaterial = catchAsync(async (req, res) => {
 
     successRes(res, {
       material,
+      effectivePrice: material.effectivePrice, // Include effective price (considers override)
       message: "Material retrieved successfully"
     });
   } catch (error) {
@@ -70,34 +232,71 @@ module.exports.getMaterial = catchAsync(async (req, res) => {
  */
 module.exports.createMaterial = catchAsync(async (req, res) => {
   try {
-    const { name, idAttribute, metalType, imageUrl, sortOrder } = req.body;
+    const {
+      name,
+      displayName,
+      idAttribute,
+      metalGroupId,
+      purityType,
+      purityNumerator,
+      purityDenominator,
+      imageUrl,
+      sortOrder,
+      description
+    } = req.body;
 
-    if (!name || !idAttribute || !metalType) {
-      return errorRes(res, 400, "Name, ID attribute, and metal type are required");
+    // Validation
+    if (!name || !idAttribute || !metalGroupId) {
+      return errorRes(res, 400, "Name, ID attribute, and metal group are required");
     }
 
-    if (!Object.values(METAL_TYPES).includes(metalType)) {
-      return errorRes(res, 400, `Invalid metal type: ${metalType}`);
+    if (!purityType || (purityType !== "BASE" && purityType !== "DERIVED")) {
+      return errorRes(res, 400, "Purity type must be BASE or DERIVED");
     }
 
-    // Check for duplicates
-    const existingMetal = await Material.findOne({ metalType });
-    if (existingMetal) {
-      return errorRes(res, 400, `Material for ${metalType} already exists`);
+    if (purityNumerator === undefined || purityDenominator === undefined) {
+      return errorRes(res, 400, "Purity numerator and denominator are required");
     }
 
-    const existingId = await Material.findOne({ idAttribute: idAttribute.toUpperCase() });
+    // Validate metal group exists
+    const metalGroup = await MetalGroup.findById(metalGroupId);
+    if (!metalGroup) {
+      return errorRes(res, 400, "Invalid metal group ID");
+    }
+
+    // Check for duplicate ID attribute
+    const existingId = await Material.findOne({
+      idAttribute: idAttribute.toUpperCase()
+    });
     if (existingId) {
       return errorRes(res, 400, `ID attribute "${idAttribute}" already exists`);
     }
 
+    // Calculate initial price
+    const purityMultiplier =
+      purityType === "BASE" ? 1 : purityNumerator / purityDenominator;
+    const calculatedPrice = metalGroup.basePrice * purityMultiplier;
+
     const material = await Material.create({
       name,
+      displayName: displayName || name,
       idAttribute: idAttribute.toUpperCase(),
-      metalType,
+      metalGroup: metalGroupId,
+      purityType,
+      purityNumerator,
+      purityDenominator,
+      purityFormula: `${purityNumerator} / ${purityDenominator}`,
+      purityPercentage: parseFloat(((purityNumerator / purityDenominator) * 100).toFixed(2)),
+      pricePerGram: parseFloat(calculatedPrice.toFixed(2)),
+      lastCalculated: new Date(),
       imageUrl,
-      sortOrder: sortOrder || 0
+      sortOrder: sortOrder || 0,
+      description,
+      isActive: true
     });
+
+    // Populate metalGroup before returning
+    await material.populate("metalGroup", "name symbol mcxPrice premium basePrice");
 
     successRes(res, {
       material,
@@ -119,18 +318,40 @@ module.exports.createMaterial = catchAsync(async (req, res) => {
 module.exports.updateMaterial = catchAsync(async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, imageUrl, isActive, sortOrder } = req.body;
+    const {
+      name,
+      displayName,
+      imageUrl,
+      isActive,
+      sortOrder,
+      description,
+      overridePrice,
+      overrideReason,
+      removeOverride
+    } = req.body;
 
-    const material = await Material.findById(id);
+    const material = await Material.findById(id).populate("metalGroup");
     if (!material) {
       return errorRes(res, 404, "Material not found");
     }
 
-    // Cannot change idAttribute or metalType (would break references)
+    // Update basic fields
+    // Cannot change idAttribute, metalGroup, or purity (would break references)
     if (name) material.name = name;
+    if (displayName) material.displayName = displayName;
     if (imageUrl !== undefined) material.imageUrl = imageUrl;
+    if (description !== undefined) material.description = description;
     if (isActive !== undefined) material.isActive = isActive;
     if (sortOrder !== undefined) material.sortOrder = sortOrder;
+
+    // Handle price override
+    if (removeOverride === true) {
+      // Remove override and recalculate from metal group
+      await material.removeOverridePrice();
+    } else if (overridePrice !== undefined) {
+      // Set price override
+      material.setOverridePrice(overridePrice, overrideReason || "Manual override", "Admin");
+    }
 
     await material.save();
 

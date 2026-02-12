@@ -1,6 +1,8 @@
 require("dotenv").config();
 // Start daily silver price cron job
 require("./utility/silver-price-cron");
+// MCX price fetch job
+const { scheduleMCXPriceFetch } = require("./jobs/fetch-mcx-prices");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
@@ -36,6 +38,7 @@ require("./models/inventory.model");
 
 // Import multi-metal pricing models
 require("./models/metal-price.model");
+require("./models/metal-group.model");
 require("./models/material.model");
 require("./models/gender.model");
 require("./models/item.model");
@@ -88,14 +91,17 @@ const database = mongoose.connection;
 database.on("error", (err) => console.log(err, "Error connecting db."));
 database.once("connected", () => {
   console.log("Database Connected.");
-  
+
   // Initialize cache service
   cacheService.init().then(() => {
     console.log("Cache service initialized.");
   }).catch((error) => {
     console.warn("Cache service initialization failed:", error.message);
   });
-  
+
+  // Schedule MCX price fetch (runs daily at 9 AM IST)
+  scheduleMCXPriceFetch();
+
   console.log("Silver price will be managed manually by admin.");
 });
 

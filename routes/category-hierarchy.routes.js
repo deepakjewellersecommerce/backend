@@ -1,6 +1,6 @@
 /**
  * Category Hierarchy Routes
- * API endpoints for Levels 1-4: Material, Gender, Item, Category
+ * API endpoints for Metal Groups and Levels 1-4: Material, Gender, Item, Category
  */
 
 const express = require("express");
@@ -8,6 +8,39 @@ const router = express.Router();
 const categoryHierarchyController = require("../controllers/category-hierarchy.controller");
 const { requireAdminLogin } = require("../middlewares/requireLogin");
 const { validateObjectId } = require("../middlewares/validation");
+
+// ==================== METAL GROUPS (Base Metals) ====================
+
+// Get all metal groups
+router.get(
+  "/admin/categories/metal-groups",
+  requireAdminLogin,
+  categoryHierarchyController.getAllMetalGroups
+);
+
+// Get single metal group
+router.get(
+  "/admin/categories/metal-groups/:id",
+  requireAdminLogin,
+  validateObjectId,
+  categoryHierarchyController.getMetalGroup
+);
+
+// Update metal group (MCX price, premium, etc.)
+router.put(
+  "/admin/categories/metal-groups/:id",
+  requireAdminLogin,
+  validateObjectId,
+  categoryHierarchyController.updateMetalGroup
+);
+
+// Update premium specifically (triggers recalculation)
+router.put(
+  "/admin/categories/metal-groups/:id/premium",
+  requireAdminLogin,
+  validateObjectId,
+  categoryHierarchyController.updateMetalGroupPremium
+);
 
 // ==================== SUBCATEGORIES FLAT LIST ====================
 
