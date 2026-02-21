@@ -20,7 +20,7 @@ module.exports.revenueByMetalType_get = catchAsync(async (req, res) => {
   const { startDate, endDate } = req.query;
   const match = {
     payment_status: "COMPLETE",
-    order_status: { $ne: "CANCELLED BY ADMIN" }
+    order_status: { $nin: ["CANCELLED_BY_ADMIN", "CANCELLED_BY_CUSTOMER"] }
   };
   if (startDate || endDate) {
     match.createdAt = {};
@@ -28,22 +28,31 @@ module.exports.revenueByMetalType_get = catchAsync(async (req, res) => {
     if (endDate) match.createdAt.$lte = new Date(endDate);
   }
 
-  // Unwind products to get metalType per product
+  // Use items array (has metalType); fall back to products for legacy orders
   const data = await User_Order.aggregate([
     { $match: match },
-    { $unwind: "$products" },
+    // Try items array first (new schema)
     {
-      $group: {
-        _id: "$products.metalType",
-        revenue: { $sum: "$products.price" },
-        orderCount: { $sum: 1 }
+      $facet: {
+        fromItems: [
+          { $unwind: { path: "$items", preserveNullAndEmptyArrays: false } },
+          { $match: { "items.metalType": { $exists: true, $ne: null } } },
+          {
+            $group: {
+              _id: "$items.metalType",
+              revenue: { $sum: "$items.lineTotal" },
+              orderCount: { $sum: 1 }
+            }
+          }
+        ]
       }
     },
+    { $unwind: "$fromItems" },
     {
       $project: {
-        metalType: "$_id",
-        revenue: 1,
-        orderCount: 1,
+        metalType: "$fromItems._id",
+        revenue: "$fromItems.revenue",
+        orderCount: "$fromItems.orderCount",
         _id: 0
       }
     },
@@ -62,7 +71,7 @@ module.exports.performanceByItemType_get = catchAsync(async (req, res) => {
   const { startDate, endDate } = req.query;
   const match = {
     payment_status: "COMPLETE",
-    order_status: { $ne: "CANCELLED BY ADMIN" }
+    order_status: { $nin: ["CANCELLED_BY_ADMIN", "CANCELLED_BY_CUSTOMER"] }
   };
   if (startDate || endDate) {
     match.createdAt = {};
@@ -227,6 +236,7 @@ module.exports.orderFunnel_get = catchAsync(async (req, res) => {
     "CONFIRMED",
     "PROCESSING",
     "SHIPPED",
+    "OUT_FOR_DELIVERY",
     "DELIVERED"
   ];
 
@@ -288,17 +298,19 @@ module.exports.dashboardKPIs_get = catchAsync(async (req, res) => {
   today.setHours(0, 0, 0, 0);
   const tomorrow = new Date(today);
   tomorrow.setDate(tomorrow.getDate() + 1);
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
+  // Today's revenue: amount + order count
   const [revenueResult] = await User_Order.aggregate([
     { $match: { payment_status: "COMPLETE", createdAt: { $gte: today, $lt: tomorrow } } },
-    { $group: { _id: null, total: { $sum: "$grandTotal" } } }
+    { $group: { _id: null, total: { $sum: "$grandTotal" }, count: { $sum: 1 } } }
   ]);
 
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const pendingOrders = await User_Order.countDocuments({
-    order_status: "PLACED",
-    createdAt: { $lt: twentyFourHoursAgo }
-  });
+  // Pending orders: total PLACED + those older than 24h
+  const [totalPending, over24hPending] = await Promise.all([
+    User_Order.countDocuments({ order_status: "PLACED" }),
+    User_Order.countDocuments({ order_status: "PLACED", createdAt: { $lt: twentyFourHoursAgo } })
+  ]);
 
   const stockOutProducts = await Inventory.distinct("product", { availableStock: { $lte: 0 } });
   const stockOutOrders = await User_Order.countDocuments({
@@ -311,18 +323,29 @@ module.exports.dashboardKPIs_get = catchAsync(async (req, res) => {
     $or: [{ subcategoryId: null }, { subcategoryId: { $exists: false } }]
   });
 
+  // Metal volatility: object keyed by metalType { current, change24h, lastUpdated }
   const MetalPrice = mongoose.model("MetalPrice");
-  const metalPrices = await MetalPrice.find({}).sort({ updatedAt: -1 }).limit(5).lean();
-  const metalVolatility = metalPrices.map(m => ({
-    metalType: m.metalType,
-    pricePerGram: m.pricePerGram,
-    change24h: m.change24h || 0
-  }));
+  const metalPrices = await MetalPrice.find({}).sort({ updatedAt: -1 }).limit(10).lean();
+  const metalVolatility = {};
+  for (const m of metalPrices) {
+    metalVolatility[m.metalType] = {
+      current: m.pricePerGram,
+      change24h: m.change24h || 0,
+      lastUpdated: m.lastUpdated || m.updatedAt
+    };
+  }
 
   successRes(res, {
     data: {
-      todayRevenue: revenueResult?.total || 0,
-      alerts: { pendingOrders, stockOutOrders, pricingErrors },
+      todayRevenue: {
+        amount: revenueResult?.total || 0,
+        orderCount: revenueResult?.count || 0
+      },
+      alerts: {
+        pendingOrders: { total: totalPending, over24h: over24hPending },
+        stockOutOrders,
+        pricingErrors
+      },
       metalVolatility
     }
   });
@@ -801,7 +824,7 @@ module.exports.taxSummary_get = catchAsync(async (req, res) => {
       totalTaxCollected: { $sum: { $ifNull: ["$taxAmount", 0] } },
       taxableAmount: { $sum: { $ifNull: ["$subtotal", 0] } },
       totalDiscount: { $sum: { $ifNull: ["$discountAmount", 0] } },
-      totalShipping: { $sum: { $ifNull: ["$shippingCharge", 0] } },
+      totalShipping: { $sum: { $ifNull: ["$shippingAmount", 0] } },
       netRevenueAfterTax: { $sum: { $ifNull: ["$grandTotal", 0] } },
       orderCount: { $sum: 1 }
     }
@@ -1039,7 +1062,7 @@ module.exports.financialSummary_get = catchAsync(async (req, res) => {
       grossRevenue: { $sum: { $ifNull: ["$subtotal", 0] } },
       discountsGiven: { $sum: { $ifNull: ["$discountAmount", 0] } },
       taxCollected: { $sum: { $ifNull: ["$taxAmount", 0] } },
-      shippingRevenue: { $sum: { $ifNull: ["$shippingCharge", 0] } },
+      shippingRevenue: { $sum: { $ifNull: ["$shippingAmount", 0] } },
       netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } },
       orderCount: { $sum: 1 }
     }

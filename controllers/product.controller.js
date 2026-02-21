@@ -19,6 +19,8 @@ const ProductImage = require("../models/product_images");
 const silverPriceService = require("../services/silver-price.service");
 const cacheService = require("../services/cache.service");
 const Inventory = require("../models/inventory.model");
+const ProductSequence = require("../models/product-sequence.model");
+const Subcategory = require("../models/subcategory.model.js");
 
 module.exports.addProduct_post = catchAsync(async (req, res) => {
   // Parse product data from form-data
@@ -44,6 +46,44 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
     }
   }
 
+  // Handle SKU auto-generation if boxNumber is provided and skuNo is not provided
+  if (productData.boxNumber && !productData.skuNo) {
+    const subcategoryId = productData.subcategoryId;
+    const boxNumber = productData.boxNumber;
+
+    if (!subcategoryId) {
+      return errorRes(res, 400, "Subcategory is required for SKU generation");
+    }
+
+    try {
+      // Fetch subcategory to get category code
+      const subcategory = await Subcategory.findById(subcategoryId);
+      if (!subcategory) {
+        return errorRes(res, 404, "Subcategory not found");
+      }
+
+      // Extract category code from fullCategoryId (remove hyphens)
+      const categoryCode = subcategory.fullCategoryId
+        ? subcategory.fullCategoryId.replace(/-/g, "")
+        : "";
+
+      if (!categoryCode) {
+        return errorRes(res, 400, "Subcategory does not have a valid category code");
+      }
+
+      // Get and increment the sequence
+      const { sku } = await ProductSequence.getAndIncrementSequence(
+        subcategoryId,
+        boxNumber,
+        categoryCode
+      );
+
+      productData.skuNo = sku;
+    } catch (error) {
+      return errorRes(res, 400, `SKU generation failed: ${error.message}`);
+    }
+  }
+
   if (productData.productSlug) {
     const findSlug = await Product.findOne({
       productSlug: productData.productSlug,
@@ -56,6 +96,22 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
     const findSku = await Product.findOne({ skuNo: productData.skuNo });
     if (findSku) {
       return errorRes(res, 400, "Product sku already exist");
+    }
+  }
+
+  // If metalType is not provided, fetch it from the Material
+  if (!productData.metalType || productData.metalType === "") {
+    if (productData.materialId) {
+      try {
+        const Material = require("../models/material.model");
+        const material = await Material.findById(productData.materialId);
+        if (material && material.metalType) {
+          productData.metalType = material.metalType;
+          console.log("Auto-populated metalType from material:", productData.metalType);
+        }
+      } catch (error) {
+        console.error("Error fetching material:", error);
+      }
     }
   }
 
@@ -84,6 +140,9 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
       }
       return errorRes(res, 400, "Internal server error. Please try again.");
     } else {
+      // Calculate and set price based on pricing mode
+      await savedProd.calculatePrice();
+
       const result = await Product.findById(savedProd._id).select("-__v");
       return successRes(res, {
         product: result,
@@ -91,10 +150,36 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
       });
     }
   } catch (err) {
+    console.error("Product save error:", err);
+
     // Cleanup images if product creation fails
     for (const publicId of cloudinaryPublicIds) {
       await deleteFromCloudinary(publicId);
     }
+
+    // Extract and format validation errors
+    if (err.name === "ValidationError") {
+      const errorDetails = {};
+      Object.keys(err.errors).forEach((key) => {
+        errorDetails[key] = err.errors[key].message;
+      });
+
+      // Format error message with field details
+      const fieldErrors = Object.entries(errorDetails)
+        .map(([field, msg]) => `${field}: ${msg}`)
+        .join("; ");
+
+      return res.status(400).json({
+        status: "error",
+        error: {
+          code: 400,
+          message: "Product validation failed",
+          fields: errorDetails,
+          details: fieldErrors,
+        },
+      });
+    }
+
     return internalServerError(res, err);
   }
 });
@@ -216,15 +301,26 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
     }
   }
 
-  const product = await Product.findByIdAndUpdate(
-    productId,
-    { $set: productData },
-    { new: true }
-  );
-
+  const product = await Product.findById(productId);
   if (!product) return errorRes(res, 400, "Product not found.");
 
-  successRes(res, { product }, "Product updated successfully.");
+  // Update product fields
+  Object.assign(product, productData);
+  const updatedProduct = await product.save();
+
+  // Recalculate price if pricing-related or weight/gemstone fields were updated
+  const needsRecalculation =
+    productData.staticPrice !== undefined ||
+    productData.pricingMode !== undefined ||
+    productData.grossWeight !== undefined ||
+    productData.netWeight !== undefined ||
+    productData.gemstones !== undefined;
+
+  if (needsRecalculation) {
+    await updatedProduct.calculatePrice();
+  }
+
+  successRes(res, { product: updatedProduct }, "Product updated successfully.");
 });
 
 module.exports.allProducts_get = catchAsync(async (req, res) => {
@@ -297,33 +393,41 @@ module.exports.getParticularProduct_get = catchAsync(async (req, res) => {
   successRes(res, { product: product[0], variants, images });
 });
 
-module.exports.deleteProduct_delete = async (req, res) => {
+module.exports.deleteProduct_delete = catchAsync(async (req, res) => {
   const { productId } = req.params;
   if (!mongoose.isValidObjectId(productId)) {
     return errorRes(res, 400, "Invalid product id");
   }
+
   try {
-    const findProduct = await Product.findById({ _id: productId });
-    if (findProduct) {
-      findProduct.displayImage.map(async (e) => {
-        await deleteFromCloudinary(e.url);
-      });
-    } else {
-      errorRes(res, 404, "Product not found");
+    // Find product and delete associated images from Cloudinary
+    const product = await Product.findById(productId);
+    if (!product) {
+      return errorRes(res, 404, "Product not found");
     }
+
+    // Delete images from Cloudinary
+    if (product.productImageUrl && Array.isArray(product.productImageUrl)) {
+      for (const imageUrl of product.productImageUrl) {
+        try {
+          await deleteFromCloudinary(imageUrl);
+        } catch (err) {
+          console.error("Error deleting image from Cloudinary:", err);
+        }
+      }
+    }
+
+    // Delete product from database
+    const deletedProduct = await Product.findByIdAndDelete(productId);
+    return successRes(res, {
+      product: deletedProduct,
+      message: "Product deleted successfully.",
+    });
   } catch (error) {
-    internalServerError(res, "error in finding the product");
+    console.error("Error deleting product:", error);
+    return internalServerError(res, error);
   }
-  Product.findByIdAndDelete(productId)
-    .then((deletedProduct) => {
-      if (!deletedProduct) return errorRes(res, 404, "Product not found.");
-      return successRes(res, {
-        deletedProduct,
-        message: "Product deleted successfully.",
-      });
-    })
-    .catch((err) => internalServerError(res, err));
-};
+});
 
 module.exports.filterProducts_post = async (req, res) => {
   const {

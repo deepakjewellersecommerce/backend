@@ -46,6 +46,7 @@ require("./models/category.model");
 require("./models/subcategory.model");
 require("./models/price-component.model");
 require("./models/subcategory-pricing.model");
+require("./models/product-sequence.model");
 
 const auth_routes = require("./routes/auth.routes");
 const product_category_routes = require("./routes/product_category.routes");
@@ -82,16 +83,38 @@ const product_pricing_routes = require("./routes/product-pricing.routes");
 const dashboard_analytics_routes = require("./routes/dashboard-analytics.routes");
 
 const passport = require("./utility/passport");
+
+// Handle unhandled rejections globally to avoid crashes
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.set("strictQuery", true);
-mongoose.connect(MONGO_URI);
-const database = mongoose.connection;
+mongoose.connect(MONGO_URI, {
+  serverSelectionTimeoutMS: 5000,
+  connectTimeoutMS: 10000,
+  family: 4, // Force IPv4 to avoid DNS resolution issues on some machines
+}).then(() => {
+  // Connection success logic is already in database.once("connected")
+}).catch(err => {
+  console.error("Mongoose initial connection failed:", err.message);
+  if (err.code === 'ETIMEOUT' && err.syscall === 'querySrv') {
+    console.warn("\n[DNS ISSUE DETECTED]");
+    console.warn("The MongoDB SRV lookup timed out. This is often a local DNS issue.");
+    console.warn("Try one of these fixes:");
+    console.warn("1. Change your DNS to 8.8.8.8 (Google) or 1.1.1.1 (Cloudflare).");
+    console.warn("2. Use the standard (non-SRV) connection string from MongoDB Atlas.");
+    console.warn("3. Check if your current network blocks access to Atlas clusters.\n");
+  }
+});
 
-database.on("error", (err) => console.log(err, "Error connecting db."));
+const database = mongoose.connection;
+database.on("error", (err) => console.error("Database error event:", err.message));
 database.once("connected", () => {
-  console.log("Database Connected.");
+  console.log("Database Connected successfully.");
 
   // Initialize cache service
   cacheService.init().then(() => {
@@ -183,6 +206,10 @@ app.use(category_hierarchy_routes);
 app.use(subcategory_v2_routes);
 app.use(product_pricing_routes);
 app.use(dashboard_analytics_routes);
+
+// Use product sequence routes (for SKU generation)
+const product_sequence_routes = require("./routes/product-sequence.routes");
+app.use("/api/product-sequence", product_sequence_routes);
 
 //wrong routes
 app.all("/", (req, res) => {

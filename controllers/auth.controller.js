@@ -384,14 +384,11 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
   });
   const PendingOrders = await User_Order.countDocuments({
     ...orderDateFilter,
-    $and: [
-      { order_status: { $ne: "DELIVERED" } },
-      { order_status: { $ne: "CANCELLED BY ADMIN" } },
-    ],
+    order_status: { $nin: ["DELIVERED", "CANCELLED_BY_ADMIN", "CANCELLED_BY_CUSTOMER", "RETURNED", "REFUNDED"] },
   });
   const CanceledOrders = await User_Order.countDocuments({
     ...orderDateFilter,
-    order_status: "CANCELLED BY ADMIN",
+    order_status: { $in: ["CANCELLED_BY_ADMIN", "CANCELLED_BY_CUSTOMER"] },
   });
 
   const orderMetrics = [
@@ -404,12 +401,13 @@ module.exports.dashboardData = catchAsync(async (req, res) => {
   // Revenue Metrics — always scoped to dateFilter
   const revenueMatch = {
     ...dateFilter,
-    order_status: { $ne: "CANCELLED BY ADMIN" }
+    payment_status: "COMPLETE",
+    order_status: { $nin: ["CANCELLED_BY_ADMIN", "CANCELLED_BY_CUSTOMER"] }
   };
 
   const [revenueAgg] = await User_Order.aggregate([
     { $match: revenueMatch },
-    { $group: { _id: null, total: { $sum: "$total_price" }, count: { $sum: 1 } } }
+    { $group: { _id: null, total: { $sum: "$grandTotal" }, count: { $sum: 1 } } }
   ]);
 
   const periodTotal = revenueAgg?.total || 0;

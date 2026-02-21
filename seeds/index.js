@@ -12,6 +12,7 @@ require("dotenv").config();
 const { runSeeds: seedCategories } = require("./seed-categories");
 const { runSeeds: seedPriceComponents } = require("./seed-price-components");
 const { runSeeds: seedMetalPrices } = require("./seed-metal-prices");
+const { runSeeds: seedDummyOrders } = require("./seed-dummy-orders");
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -65,6 +66,11 @@ const seeds = {
     name: "Metal Prices",
     run: seedMetalPrices,
     order: 3
+  },
+  "dummy-orders": {
+    name: "Dummy Orders (Dashboard Testing)",
+    run: seedDummyOrders,
+    order: 4
   }
 };
 
@@ -186,6 +192,11 @@ const runAllSeeds = async () => {
           }
 
           console.log(`  ✓ Metal Prices seeded`);
+        }
+
+        if (key === "dummy-orders") {
+          await seedDummyOrders();
+          console.log(`  ✓ Dummy Orders seeded`);
         }
 
       } catch (seedError) {
