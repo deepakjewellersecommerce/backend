@@ -8,12 +8,14 @@ const upload = require("../middlewares/Multer");
 
 router.post(
   "/product-variant/add",
+  upload.array("images", 5),
   validate(addproductVariantSchema),
   productVariationController.addProductVariation
 );
 
 router.put(
   "/product-variant/update/:id",
+  upload.array("images", 5),
   validate(addproductVariantSchema),
   validateObjectId('id'),
   productVariationController.updateProductVariation
@@ -27,6 +29,7 @@ router.delete(
 
 router.get(
   "/product-variant/:id/all",
+  requireAdminLogin,
   validateObjectId('id'),
   productVariationController.getAllProductVariation
 );

@@ -17,7 +17,7 @@ module.exports.addColor_post = catchAsync(async (req, res) => {
 
   if (!hexcodeValidate(hexcode)) return errorRes(res, 400, "Invalid hexcode");
 
-  const hexCodeExist = await Product_Color.findOne({ hexcode });
+  const hexCodeExist = await Product_Color.findOne({ hexcode, is_deleted: { $ne: true } });
   if (hexCodeExist)
     return errorRes(
       res,
@@ -26,7 +26,7 @@ module.exports.addColor_post = catchAsync(async (req, res) => {
     );
 
   const resultColor = firstLetterCapitalInString(color_name);
-  Product_Color.findOne({ color_name: resultColor })
+  Product_Color.findOne({ color_name: resultColor, is_deleted: { $ne: true } })
     .then(async (savedcolor) => {
       if (savedcolor) return errorRes(res, 400, "Color name already exist.");
 
@@ -59,9 +59,9 @@ module.exports.updateColor_post = catchAsync(async (req, res) => {
   if (!hexcodeValidate(hexcode)) return errorRes(res, 400, "Invalid hexcode");
 
   const resultColor = firstLetterCapitalInString(color_name);
-  Product_Color.findOne({ color_name: resultColor })
+  Product_Color.findOne({ color_name: resultColor, is_deleted: { $ne: true } })
     .then(async (savedcolor) => {
-      if (savedcolor && savedcolor._id != id)
+      if (savedcolor && String(savedcolor._id) !== String(id))
         return errorRes(res, 400, "Color name already exist.");
 
       await Product_Color.findByIdAndUpdate(
@@ -81,7 +81,7 @@ module.exports.updateColor_post = catchAsync(async (req, res) => {
 });
 
 module.exports.allColor_get = (req, res) => {
-  Product_Color.find()
+  Product_Color.find({ is_deleted: { $ne: true } })
     .sort("color_name")
     .then((colors) => successRes(res, { colors }))
     .catch((err) => internalServerError(res, err));
@@ -89,18 +89,18 @@ module.exports.allColor_get = (req, res) => {
 
 module.exports.singleColor_get = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const color = await Product_Color.findById(id);
+  const color = await Product_Color.findOne({ _id: id, is_deleted: { $ne: true } });
   if (!color) return errorRes(res, 404, "Color not found.");
   successRes(res, { color });
 });
 
 module.exports.deleteColor = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const deletedColor = await Product_Color.findByIdAndUpdate(
-    id,
-    { is_deleted: true },
-    { new: true }
-  );
-  if (!deletedColor) return errorRes(res, 404, "Color not found.");
+  const color = await Product_Color.findById(id);
+  if (!color) return errorRes(res, 404, "Color not found.");
+  // Mangle slug on soft-delete so the unique index won't block re-creation
+  color.is_deleted = true;
+  color.slug = `${color.slug}_deleted_${color._id}`;
+  await color.save();
   successRes(res, { message: "Color deleted successfully." });
 });

@@ -4,6 +4,19 @@ const productVariation = require("../models/product_varient");
 const catchAsync = require("../utility/catch-async");
 const { errorRes } = require("../utility");
 
+// Helper to upload variant image files to Cloudinary
+async function uploadVariantImages(files) {
+  const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
+  const urls = [];
+  for (const file of files) {
+    const data = await uploadOnCloudinary(file.path);
+    if (data && data.secure_url) {
+      urls.push(data.secure_url);
+    }
+  }
+  return urls;
+}
+
 module.exports.addProductVariation = catchAsync(async (req, res, next) => {
   const existingVariation = await productVariation.findOne({
     productId: req.body.productId,
@@ -19,6 +32,23 @@ module.exports.addProductVariation = catchAsync(async (req, res, next) => {
     });
   }
 
+  // Parse FormData fields
+  if (typeof req.body.isActive === "string") {
+    req.body.isActive = req.body.isActive === "true";
+  }
+
+  // Parse gemstones from FormData (sent as JSON string)
+  if (req.body.gemstones && typeof req.body.gemstones === "string") {
+    try { req.body.gemstones = JSON.parse(req.body.gemstones); } catch { req.body.gemstones = []; }
+  }
+
+  // Upload images to Cloudinary if files were sent
+  const files = req.files || [];
+  if (files.length > 0) {
+    const uploadedUrls = await uploadVariantImages(files);
+    req.body.imageUrls = uploadedUrls;
+  }
+
   const variant = await productVariation.create(req.body);
   res.status(201).json({
     status: "success",
@@ -29,6 +59,29 @@ module.exports.addProductVariation = catchAsync(async (req, res, next) => {
 });
 
 module.exports.updateProductVariation = catchAsync(async (req, res, next) => {
+  // Parse FormData fields
+  if (typeof req.body.isActive === "string") {
+    req.body.isActive = req.body.isActive === "true";
+  }
+
+  // Parse existing imageUrls from FormData (sent as JSON string)
+  if (typeof req.body.imageUrls === "string") {
+    try { req.body.imageUrls = JSON.parse(req.body.imageUrls); } catch { req.body.imageUrls = []; }
+  }
+
+  // Parse gemstones from FormData (sent as JSON string)
+  if (req.body.gemstones && typeof req.body.gemstones === "string") {
+    try { req.body.gemstones = JSON.parse(req.body.gemstones); } catch { req.body.gemstones = []; }
+  }
+
+  // Upload new images to Cloudinary if files were sent
+  const files = req.files || [];
+  if (files.length > 0) {
+    const uploadedUrls = await uploadVariantImages(files);
+    const existing = Array.isArray(req.body.imageUrls) ? req.body.imageUrls : [];
+    req.body.imageUrls = [...existing, ...uploadedUrls];
+  }
+
   const variant = await productVariation
     .findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -59,7 +112,7 @@ module.exports.deleteProductVariation = catchAsync(async (req, res, next) => {
 
 module.exports.getAllProductVariation = catchAsync(async (req, res, next) => {
   const { id } = req.params;
-  const isAdmin = req.user?.role == "admin";
+  const isAdmin = !!req.admin;
   const filter = isAdmin ? {} : { isActive: true };
   
   filter.productId = id;
