@@ -145,6 +145,8 @@ class CacheService {
     products: (page, limit, filters) => `products:${page}:${limit}:${JSON.stringify(filters)}`,
     category: (id) => `category:${id}`,
     categories: () => 'categories:all',
+    pricingConfig: (subcategoryId) => `pricingConfig:${subcategoryId}`,
+    pricingSource: (subcategoryId) => `pricingSource:${subcategoryId}`,
     silverPrice: () => 'silver:price',
     userCart: (userId) => `cart:${userId}`,
     orderStats: (userId) => `order:stats:${userId}`,

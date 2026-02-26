@@ -13,6 +13,8 @@ const { MetalPrice } = require("../models/metal-price.model");
 const pricingCalculationService = require("../services/pricing-calculation.service");
 const { errorRes, successRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
+const { logAudit, AUDIT_ACTIONS, AUDIT_ENTITIES } = require("../models/audit-log.model");
+const cacheService = require("../services/cache.service");
 
 // ==================== CRUD OPERATIONS ====================
 
@@ -401,58 +403,92 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
  * DELETE /api/admin/subcategories/:id
  */
 module.exports.deleteSubcategory = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { force = false } = req.query;
+
+  const subcategory = await Subcategory.findById(id);
+  if (!subcategory) {
+    return errorRes(res, 404, "Subcategory not found");
+  }
+
+  // Check for children
+  const childrenCount = await Subcategory.countDocuments({
+    parentSubcategoryId: id
+  });
+
+  // Check for products (direct + descendant)
+  const productsCount = await Product.countDocuments({ subcategoryId: id });
+
+  if ((childrenCount > 0 || productsCount > 0) && force !== "true") {
+    return errorRes(
+      res,
+      400,
+      `Cannot delete subcategory. It has ${childrenCount} nested subcategories and ${productsCount} products. Use force=true to cascade delete everything.`
+    );
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { id } = req.params;
-    const { force = false } = req.query;
+    const ProductVariant = require("../models/product_varient");
+    const { RfidTag } = require("../models/rfid-tag.model");
+    const Inventory = require("../models/inventory.model");
 
-    const subcategory = await Subcategory.findById(id);
-    if (!subcategory) {
-      return errorRes(res, 404, "Subcategory not found");
+    if (force === "true") {
+      // Collect all subcategory IDs to delete (this one + descendants)
+      const descendantSubs = await Subcategory.find({ ancestorPath: id }).distinct("_id").session(session);
+      const allSubIds = [id, ...descendantSubs.map(s => s.toString())];
+
+      // Find all products under this subtree
+      const productIds = await Product.find({
+        subcategoryId: { $in: allSubIds }
+      }).distinct("_id").session(session);
+
+      if (productIds.length > 0) {
+        // Cascade delete all product-related data
+        await Promise.all([
+          ProductVariant.deleteMany({ productId: { $in: productIds } }).session(session),
+          RfidTag.deleteMany({ product: { $in: productIds } }).session(session),
+          Inventory.deleteMany({ product: { $in: productIds } }).session(session),
+        ]);
+        // Delete products
+        await Product.deleteMany({ subcategoryId: { $in: allSubIds } }).session(session);
+      }
+
+      // Delete pricing configs for all affected subcategories
+      const pricingIds = await Subcategory.find({
+        _id: { $in: allSubIds },
+        pricingConfigId: { $ne: null }
+      }).distinct("pricingConfigId").session(session);
+
+      if (pricingIds.length > 0) {
+        await SubcategoryPricing.deleteMany({ _id: { $in: pricingIds } }).session(session);
+      }
+
+      // Delete descendant subcategories
+      await Subcategory.deleteMany({ ancestorPath: id }).session(session);
     }
 
-    // Check for children
-    const childrenCount = await Subcategory.countDocuments({
-      parentSubcategoryId: id
-    });
-
-    if (childrenCount > 0 && force !== "true") {
-      return errorRes(
-        res,
-        400,
-        `Cannot delete subcategory. It has ${childrenCount} nested subcategories. Use force=true to delete all descendants.`
-      );
-    }
-
-    // Check for products
-    const productsCount = await Product.countDocuments({
-      subcategoryId: id
-    });
-
-    if (productsCount > 0) {
-      return errorRes(
-        res,
-        400,
-        `Cannot delete subcategory. It has ${productsCount} products. Move or delete products first.`
-      );
-    }
-
-    // Delete descendants if force
-    if (force === "true" && childrenCount > 0) {
-      await Subcategory.deleteMany({ ancestorPath: id });
-    }
-
-    // Delete pricing config
+    // Delete pricing config for this subcategory
     if (subcategory.pricingConfigId) {
-      await SubcategoryPricing.findByIdAndDelete(subcategory.pricingConfigId);
+      await SubcategoryPricing.findByIdAndDelete(subcategory.pricingConfigId).session(session);
     }
 
-    await Subcategory.findByIdAndDelete(id);
+    // Delete the subcategory itself
+    await Subcategory.findByIdAndDelete(id).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
 
     successRes(res, {
       message: "Subcategory deleted successfully",
-      deletedDescendants: force === "true" ? childrenCount : 0
+      deletedDescendants: force === "true" ? childrenCount : 0,
+      deletedProducts: force === "true" ? productsCount : 0,
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error("Error deleting subcategory:", error);
     internalServerError(res, error.message);
   }
@@ -538,6 +574,21 @@ module.exports.updatePricingConfig = catchAsync(async (req, res) => {
     // Update affected products count
     await SubcategoryPricing.updateAffectedCount(id);
 
+    // Invalidate pricing config cache for this subcategory and all descendants
+    await cacheService.clearPattern(`pricingConfig:*`);
+    await cacheService.clearPattern(`pricingSource:*`);
+
+    logAudit({
+      entityType: AUDIT_ENTITIES.PRICING_CONFIG,
+      entityId: pricingConfig._id,
+      action: AUDIT_ACTIONS.UPDATE,
+      actorId: req.admin?._id,
+      actorName: adminName,
+      summary: `Updated pricing config for subcategory "${subcategory.name}"`,
+      changes: { after: { components: components.length } },
+      metadata: { subcategoryId: id, subcategoryName: subcategory.name }
+    });
+
     successRes(res, {
       pricingConfig,
       message: "Pricing config updated successfully"
@@ -571,6 +622,10 @@ module.exports.createDefaultPricingConfig = catchAsync(async (req, res) => {
     subcategory.hasPricingConfig = true;
     subcategory.pricingConfigId = pricingConfig._id;
     await subcategory.save();
+
+    // Invalidate pricing config cache
+    await cacheService.clearPattern(`pricingConfig:*`);
+    await cacheService.clearPattern(`pricingSource:*`);
 
     successRes(res, {
       pricingConfig,
@@ -607,6 +662,10 @@ module.exports.removePricingConfig = catchAsync(async (req, res) => {
     subcategory.hasPricingConfig = false;
     subcategory.pricingConfigId = null;
     await subcategory.save();
+
+    // Invalidate pricing config cache
+    await cacheService.clearPattern(`pricingConfig:*`);
+    await cacheService.clearPattern(`pricingSource:*`);
 
     // Get new inherited source
     const pricingSource = await subcategory.getPricingSource();

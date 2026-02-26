@@ -325,13 +325,28 @@ class PricingCalculationService {
     // Get metal rate info
     const metalPrice = await MetalPrice.getCurrentPrice(product.metalType);
 
+    // Get effective pricing config for live preview on the frontend
+    let pricingConfig = null;
+    if (product.pricingMode === "CUSTOM_DYNAMIC") {
+      pricingConfig = product.pricingConfig;
+    } else if (product.pricingMode === "SUBCATEGORY_DYNAMIC") {
+      pricingConfig = await this.getSubcategoryPricingConfig(
+        product.subcategoryId?._id || product.subcategoryId
+      );
+    }
+
     return {
       product: {
         id: product._id,
-        title: product.productTitle,
+        productTitle: product.productTitle,
+        skuNo: product.skuNo,
         metalType: product.metalType,
         grossWeight: product.grossWeight,
-        netWeight: product.netWeight
+        netWeight: product.netWeight,
+        pricingMode: product.pricingMode,
+        staticPrice: product.staticPrice,
+        calculatedPrice: product.calculatedPrice,
+        allComponentsFrozen: product.allComponentsFrozen,
       },
       pricing: {
         mode: product.pricingMode,
@@ -350,6 +365,7 @@ class PricingCalculationService {
         pricePerGram: metalPrice.pricePerGram,
         lastUpdated: metalPrice.lastUpdated
       },
+      pricingConfig,
       breakdown: product.priceBreakdown,
       calculatedPrice: product.calculatedPrice
     };

@@ -166,6 +166,9 @@ subcategorySchema.index(
   { parentSubcategoryId: 1, categoryId: 1, slug: 1 },
   { unique: true }
 );
+// Compound indexes for common query patterns
+subcategorySchema.index({ categoryId: 1, isActive: 1 });
+subcategorySchema.index({ categoryId: 1, level: 1, isActive: 1 });
 
 // Virtual: Children subcategories
 subcategorySchema.virtual("children", {
@@ -302,57 +305,79 @@ subcategorySchema.statics.getAncestors = async function (subcategoryId) {
 /**
  * Instance method: Get pricing config (with inheritance)
  * Walks up the tree to find nearest ancestor with pricing config
+ * Uses Redis cache to avoid N+1 queries during bulk operations
  */
 subcategorySchema.methods.getPricingConfig = async function () {
-  if (this.hasPricingConfig && this.pricingConfigId) {
-    const SubcategoryPricing = mongoose.model("SubcategoryPricing");
-    return SubcategoryPricing.findById(this.pricingConfigId);
-  }
+  const cacheService = require("../services/cache.service");
+  const cacheKey = cacheService.keys.pricingConfig(this._id);
 
-  // Walk up the ancestor tree
-  if (this.ancestorPath.length > 0) {
-    // Get ancestors in reverse order (nearest first)
-    const ancestors = await this.constructor
-      .find({
-        _id: { $in: this.ancestorPath },
-        hasPricingConfig: true
-      })
-      .sort({ level: -1 })
-      .limit(1);
+  return cacheService.getWithFallback(
+    cacheKey,
+    async () => {
+      if (this.hasPricingConfig && this.pricingConfigId) {
+        const SubcategoryPricing = mongoose.model("SubcategoryPricing");
+        const config = await SubcategoryPricing.findById(this.pricingConfigId).lean();
+        return config;
+      }
 
-    if (ancestors.length > 0) {
-      const SubcategoryPricing = mongoose.model("SubcategoryPricing");
-      return SubcategoryPricing.findById(ancestors[0].pricingConfigId);
-    }
-  }
+      // Walk up the ancestor tree
+      if (this.ancestorPath.length > 0) {
+        const ancestors = await this.constructor
+          .find({
+            _id: { $in: this.ancestorPath },
+            hasPricingConfig: true
+          })
+          .sort({ level: -1 })
+          .limit(1)
+          .lean();
 
-  // No pricing found in hierarchy - return null (should use system defaults)
-  return null;
+        if (ancestors.length > 0) {
+          const SubcategoryPricing = mongoose.model("SubcategoryPricing");
+          const config = await SubcategoryPricing.findById(ancestors[0].pricingConfigId).lean();
+          return config;
+        }
+      }
+
+      return null;
+    },
+    cacheService.TTL.MEDIUM
+  );
 };
 
 /**
  * Instance method: Get pricing source (which subcategory provides pricing)
+ * Uses Redis cache to avoid repeated ancestor lookups
  */
 subcategorySchema.methods.getPricingSource = async function () {
-  if (this.hasPricingConfig) {
-    return { source: "self", subcategory: this };
-  }
+  const cacheService = require("../services/cache.service");
+  const cacheKey = cacheService.keys.pricingSource(this._id);
 
-  if (this.ancestorPath.length > 0) {
-    const ancestors = await this.constructor
-      .find({
-        _id: { $in: this.ancestorPath },
-        hasPricingConfig: true
-      })
-      .sort({ level: -1 })
-      .limit(1);
+  return cacheService.getWithFallback(
+    cacheKey,
+    async () => {
+      if (this.hasPricingConfig) {
+        return { source: "self", subcategoryId: this._id, subcategoryName: this.name };
+      }
 
-    if (ancestors.length > 0) {
-      return { source: "inherited", subcategory: ancestors[0] };
-    }
-  }
+      if (this.ancestorPath.length > 0) {
+        const ancestors = await this.constructor
+          .find({
+            _id: { $in: this.ancestorPath },
+            hasPricingConfig: true
+          })
+          .sort({ level: -1 })
+          .limit(1)
+          .lean();
 
-  return { source: "none", subcategory: null };
+        if (ancestors.length > 0) {
+          return { source: "inherited", subcategoryId: ancestors[0]._id, subcategoryName: ancestors[0].name };
+        }
+      }
+
+      return { source: "none", subcategoryId: null, subcategoryName: null };
+    },
+    cacheService.TTL.MEDIUM
+  );
 };
 
 /**
