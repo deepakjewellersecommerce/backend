@@ -285,8 +285,8 @@ function getPreviousPeriod(startDate, endDate) {
   const prevEnd = new Date(start.getTime() - 1); // day before current start
   const prevStart = new Date(prevEnd.getTime() - diff);
   return {
-    startDate: prevStart.toISOString().split("T")[0],
-    endDate: prevEnd.toISOString().split("T")[0]
+    startDate: prevStart.toISOString(),
+    endDate: prevEnd.toISOString()
   };
 }
 
@@ -846,6 +846,13 @@ module.exports.taxSummary_get = catchAsync(async (req, res) => {
     totalShipping: 0, netRevenueAfterTax: 0, orderCount: 0
   };
 
+  // Fix: the group stage sums grandTotal as netRevenueAfterTax, but grandTotal *includes* tax.
+  // Subtract tax to get the true "net after tax" value.
+  data.netRevenueAfterTax = (data.netRevenueAfterTax || 0) - (data.totalTaxCollected || 0);
+  if (prevStats) {
+    prevStats.netRevenueAfterTax = (prevStats.netRevenueAfterTax || 0) - (prevStats.totalTaxCollected || 0);
+  }
+
   data.effectiveTaxRate = data.taxableAmount > 0
     ? Math.round((data.totalTaxCollected / data.taxableAmount) * 10000) / 100
     : 0;
@@ -874,7 +881,7 @@ module.exports.taxSummary_get = catchAsync(async (req, res) => {
 module.exports.couponAnalytics_get = catchAsync(async (req, res) => {
   const { startDate, endDate } = req.query;
   const match = buildDateMatch(startDate, endDate);
-  match.couponCode = { $exists: true, $ne: null, $ne: "" };
+  match.couponCode = { $exists: true, $nin: [null, ""] };
 
   const breakdown = await User_Order.aggregate([
     { $match: match },
@@ -907,7 +914,7 @@ module.exports.couponAnalytics_get = catchAsync(async (req, res) => {
         couponType: { $ifNull: ["$couponDetails.couponType", "N/A"] },
         couponAmount: { $ifNull: ["$couponDetails.couponAmount", 0] },
         isActive: { $ifNull: ["$couponDetails.isActive", false] },
-        expiryDate: "$couponDetails.expiryDate",
+        expiryDate: { $ifNull: ["$couponDetails.expiryDate", null] },
         couponQuantity: { $ifNull: ["$couponDetails.couponQuantity", 0] },
         usedQuantity: { $ifNull: ["$couponDetails.usedQuantity", 0] },
         maxDiscountAmount: "$couponDetails.maxDiscountAmount"
@@ -916,10 +923,13 @@ module.exports.couponAnalytics_get = catchAsync(async (req, res) => {
     { $sort: { timesUsed: -1 } }
   ]);
 
+  // uniqueCouponsUsed = number of distinct coupon codes used in the period
+  // totalCouponsUsed  = total order count where any coupon was applied (kept for internal use)
+  const uniqueCouponsUsed = breakdown.length;
   const totalCouponsUsed = breakdown.reduce((s, c) => s + c.timesUsed, 0);
   const totalDiscountGiven = breakdown.reduce((s, c) => s + c.totalDiscount, 0);
   const totalRevenueFromCoupons = breakdown.reduce((s, c) => s + c.revenueGenerated, 0);
-  const mostUsedCoupon = breakdown.length > 0 ? breakdown[0].couponCode : "N/A";
+  const mostUsedCoupon = breakdown.find(c => c.couponCode)?.couponCode || "N/A";
   const couponROI = totalDiscountGiven > 0
     ? Math.round(((totalRevenueFromCoupons - totalDiscountGiven) / totalDiscountGiven) * 10000) / 100
     : 0;
@@ -929,22 +939,44 @@ module.exports.couponAnalytics_get = catchAsync(async (req, res) => {
   let previousPeriod = null;
   if (prev) {
     const prevMatch = buildDateMatch(prev.startDate, prev.endDate);
-    prevMatch.couponCode = { $exists: true, $ne: null, $ne: "" };
+    prevMatch.couponCode = { $exists: true, $nin: [null, ""] };
+    // Group by couponCode first to get distinct count, then roll up totals
     const [prevAgg] = await User_Order.aggregate([
       { $match: prevMatch },
-      { $group: { _id: null, count: { $sum: 1 }, discount: { $sum: { $ifNull: ["$discountAmount", 0] } } } }
+      {
+        $group: {
+          _id: "$couponCode",
+          orderCount: { $sum: 1 },
+          discount: { $sum: { $ifNull: ["$discountAmount", 0] } }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          uniqueCount: { $sum: 1 },
+          count: { $sum: "$orderCount" },
+          discount: { $sum: "$discount" }
+        }
+      }
     ]);
     if (prevAgg) {
       previousPeriod = {
-        totalCouponsUsed: prevAgg.count > 0 ? Math.round(((totalCouponsUsed - prevAgg.count) / prevAgg.count) * 10000) / 100 : totalCouponsUsed > 0 ? 100 : 0,
-        totalDiscountGiven: prevAgg.discount > 0 ? Math.round(((totalDiscountGiven - prevAgg.discount) / prevAgg.discount) * 10000) / 100 : totalDiscountGiven > 0 ? 100 : 0
+        uniqueCouponsUsed: prevAgg.uniqueCount > 0
+          ? Math.round(((uniqueCouponsUsed - prevAgg.uniqueCount) / prevAgg.uniqueCount) * 10000) / 100
+          : uniqueCouponsUsed > 0 ? 100 : 0,
+        totalCouponsUsed: prevAgg.count > 0
+          ? Math.round(((totalCouponsUsed - prevAgg.count) / prevAgg.count) * 10000) / 100
+          : totalCouponsUsed > 0 ? 100 : 0,
+        totalDiscountGiven: prevAgg.discount > 0
+          ? Math.round(((totalDiscountGiven - prevAgg.discount) / prevAgg.discount) * 10000) / 100
+          : totalDiscountGiven > 0 ? 100 : 0
       };
     }
   }
 
   successRes(res, {
     data: {
-      summary: { totalCouponsUsed, totalDiscountGiven, mostUsedCoupon, couponROI, previousPeriod },
+      summary: { uniqueCouponsUsed, totalCouponsUsed, totalDiscountGiven, mostUsedCoupon, couponROI, previousPeriod },
       breakdown
     }
   });
@@ -1053,60 +1085,188 @@ module.exports.loyaltyLiability_get = catchAsync(async (req, res) => {
  * GET /admin/dashboard/analytics/financial-summary?startDate=&endDate=
  */
 module.exports.financialSummary_get = catchAsync(async (req, res) => {
-  const { startDate, endDate } = req.query;
+  const { startDate, endDate, incomeTaxRate: taxRateParam } = req.query;
+  const incomeTaxRate = taxRateParam ? parseFloat(taxRateParam) : 25;
+  const gatewayFeeRate = 0.02; // 2% of online payments
   const match = buildDateMatch(startDate, endDate);
 
-  const financialGroupStage = {
-    $group: {
-      _id: null,
-      grossRevenue: { $sum: { $ifNull: ["$subtotal", 0] } },
-      discountsGiven: { $sum: { $ifNull: ["$discountAmount", 0] } },
-      taxCollected: { $sum: { $ifNull: ["$taxAmount", 0] } },
-      shippingRevenue: { $sum: { $ifNull: ["$shippingAmount", 0] } },
-      netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } },
-      orderCount: { $sum: 1 }
+  // Aggregation pipeline: unwind items to extract COGS from priceBreakdownSnapshot
+  const profitPipeline = [
+    { $match: match },
+    // Unwind items to access per-item COGS
+    { $unwind: { path: "$items", preserveNullAndEmptyArrays: true } },
+    {
+      $group: {
+        _id: null,
+        grossRevenue: { $sum: { $ifNull: ["$subtotal", 0] } },
+        discountsGiven: { $sum: { $ifNull: ["$discountAmount", 0] } },
+        taxCollected: { $sum: { $ifNull: ["$taxAmount", 0] } },
+        shippingRevenue: { $sum: { $ifNull: ["$shippingAmount", 0] } },
+        netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+        // COGS from item snapshots (multiply by quantity)
+        totalMetalCost: {
+          $sum: {
+            $multiply: [
+              { $ifNull: ["$items.priceBreakdownSnapshot.metalCost", 0] },
+              { $ifNull: ["$items.quantity", 1] }
+            ]
+          }
+        },
+        totalGemstoneCost: {
+          $sum: {
+            $multiply: [
+              { $ifNull: ["$items.priceBreakdownSnapshot.gemstoneCost", 0] },
+              { $ifNull: ["$items.quantity", 1] }
+            ]
+          }
+        },
+        // Shipping cost paid to delivery partners
+        shippingCostToPartner: { $sum: { $ifNull: ["$shippingCostToPartner", 0] } },
+        // For gateway fees: sum grandTotal of ONLINE payment orders
+        onlinePaymentTotal: {
+          $sum: {
+            $cond: [
+              { $eq: ["$payment_mode", "ONLINE"] },
+              { $ifNull: ["$grandTotal", 0] },
+              0
+            ]
+          }
+        },
+        orderCount: { $sum: 1 }
+      }
     }
-  };
+  ];
+
+  // The $unwind duplicates order-level fields per item, so we need a two-stage approach:
+  // Stage 1: Aggregate order-level fields (no unwind)
+  // Stage 2: Aggregate item-level COGS (with unwind)
+  const orderLevelPipeline = [
+    { $match: match },
+    {
+      $group: {
+        _id: null,
+        grossRevenue: { $sum: { $ifNull: ["$subtotal", 0] } },
+        discountsGiven: { $sum: { $ifNull: ["$discountAmount", 0] } },
+        taxCollected: { $sum: { $ifNull: ["$taxAmount", 0] } },
+        shippingRevenue: { $sum: { $ifNull: ["$shippingAmount", 0] } },
+        netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+        shippingCostToPartner: { $sum: { $ifNull: ["$shippingCostToPartner", 0] } },
+        onlinePaymentTotal: {
+          $sum: {
+            $cond: [
+              { $eq: ["$payment_mode", "ONLINE"] },
+              { $ifNull: ["$grandTotal", 0] },
+              0
+            ]
+          }
+        },
+        orderCount: { $sum: 1 }
+      }
+    }
+  ];
+
+  const itemCogsPipeline = [
+    { $match: match },
+    { $unwind: { path: "$items", preserveNullAndEmptyArrays: false } },
+    {
+      $group: {
+        _id: null,
+        totalMetalCost: {
+          $sum: {
+            $multiply: [
+              { $ifNull: ["$items.priceBreakdownSnapshot.metalCost", 0] },
+              { $ifNull: ["$items.quantity", 1] }
+            ]
+          }
+        },
+        totalGemstoneCost: {
+          $sum: {
+            $multiply: [
+              { $ifNull: ["$items.priceBreakdownSnapshot.gemstoneCost", 0] },
+              { $ifNull: ["$items.quantity", 1] }
+            ]
+          }
+        }
+      }
+    }
+  ];
 
   // Run current + previous period in parallel
   const prev = getPreviousPeriod(startDate, endDate);
   const prevMatch = prev ? buildDateMatch(prev.startDate, prev.endDate) : null;
 
-  const [currentResult, prevResult] = await Promise.all([
-    User_Order.aggregate([{ $match: match }, financialGroupStage]),
-    prevMatch ? User_Order.aggregate([{ $match: prevMatch }, financialGroupStage]) : Promise.resolve([])
+  const prevOrderPipeline = prevMatch
+    ? [{ $match: prevMatch }, orderLevelPipeline[1]]
+    : null;
+  const prevItemCogsPipeline = prevMatch
+    ? [{ $match: prevMatch }, itemCogsPipeline[1], itemCogsPipeline[2]]
+    : null;
+
+  const [orderResult, cogsResult, prevOrderResult, prevCogsResult] = await Promise.all([
+    User_Order.aggregate(orderLevelPipeline),
+    User_Order.aggregate(itemCogsPipeline),
+    prevOrderPipeline ? User_Order.aggregate(prevOrderPipeline) : Promise.resolve([]),
+    prevItemCogsPipeline ? User_Order.aggregate(prevItemCogsPipeline) : Promise.resolve([])
   ]);
 
-  const [stats] = currentResult;
-  const [prevStats] = prevResult;
+  const orderStats = orderResult[0] || {};
+  const cogsStats = cogsResult[0] || {};
+  const prevOrderStats = prevOrderResult[0] || null;
+  const prevCogsStats = prevCogsResult[0] || null;
 
-  // Get loyalty liability
-  let loyaltyLiability = 0;
-  try {
-    const [loyaltyStats] = await UserLoyalty.aggregate([
-      { $group: { _id: null, totalPoints: { $sum: { $ifNull: ["$availablePoints", 0] } } } }
-    ]);
-    let ratio = 10;
-    const config = await LoyaltyProgram.findOne({}).lean();
-    if (config?.redemptionRules?.pointsToRupeeRatio) ratio = config.redemptionRules.pointsToRupeeRatio;
-    loyaltyLiability = (loyaltyStats?.totalPoints || 0) / ratio;
-  } catch (e) {
-    // Models may not exist yet
+  // Compute derived profit metrics
+  function computeProfitMetrics(order, cogs) {
+    const grossRevenue = order.grossRevenue || 0;
+    const totalMetalCost = cogs.totalMetalCost || 0;
+    const totalGemstoneCost = cogs.totalGemstoneCost || 0;
+    const totalCOGS = totalMetalCost + totalGemstoneCost;
+    const grossProfit = grossRevenue - totalCOGS;
+    const discountsGiven = order.discountsGiven || 0;
+    const shippingRevenue = order.shippingRevenue || 0;
+    const shippingCostToPartner = order.shippingCostToPartner || 0;
+    const shippingMargin = shippingRevenue - shippingCostToPartner;
+    const onlinePaymentTotal = order.onlinePaymentTotal || 0;
+    const gatewayFees = Math.round(onlinePaymentTotal * gatewayFeeRate * 100) / 100;
+    const profitBeforeTax = grossProfit - discountsGiven + shippingMargin - gatewayFees;
+    const incomeTax = Math.round(Math.max(0, profitBeforeTax) * (incomeTaxRate / 100) * 100) / 100;
+    const profitAfterTax = Math.round((profitBeforeTax - incomeTax) * 100) / 100;
+
+    return {
+      grossRevenue,
+      totalMetalCost: Math.round(totalMetalCost * 100) / 100,
+      totalGemstoneCost: Math.round(totalGemstoneCost * 100) / 100,
+      totalCOGS: Math.round(totalCOGS * 100) / 100,
+      grossProfit: Math.round(grossProfit * 100) / 100,
+      discountsGiven,
+      shippingRevenue,
+      shippingCostToPartner,
+      shippingMargin: Math.round(shippingMargin * 100) / 100,
+      gatewayFees,
+      profitBeforeTax: Math.round(profitBeforeTax * 100) / 100,
+      incomeTaxRate,
+      incomeTax,
+      profitAfterTax,
+      taxCollected: order.taxCollected || 0,
+      netRevenue: order.netRevenue || 0,
+      orderCount: order.orderCount || 0
+    };
   }
 
-  const defaults = { grossRevenue: 0, discountsGiven: 0, taxCollected: 0, shippingRevenue: 0, netRevenue: 0, orderCount: 0 };
-  const data = {
-    ...(stats || defaults),
-    loyaltyLiability: Math.round(loyaltyLiability * 100) / 100
-  };
-  delete data._id;
+  const data = computeProfitMetrics(orderStats, cogsStats);
 
   // Compute % change vs previous period
-  if (prevStats) {
+  if (prevOrderStats) {
+    const prevData = computeProfitMetrics(prevOrderStats, prevCogsStats || {});
     data.previousPeriod = {};
-    for (const key of ["grossRevenue", "discountsGiven", "taxCollected", "shippingRevenue", "netRevenue", "orderCount"]) {
+    const changeKeys = [
+      "grossRevenue", "totalMetalCost", "totalGemstoneCost", "totalCOGS",
+      "grossProfit", "discountsGiven", "shippingRevenue", "shippingCostToPartner",
+      "shippingMargin", "gatewayFees", "profitBeforeTax", "profitAfterTax",
+      "taxCollected", "netRevenue", "orderCount"
+    ];
+    for (const key of changeKeys) {
       const curr = data[key] || 0;
-      const prevVal = prevStats[key] || 0;
+      const prevVal = prevData[key] || 0;
       data.previousPeriod[key] = prevVal > 0 ? Math.round(((curr - prevVal) / prevVal) * 10000) / 100 : curr > 0 ? 100 : 0;
     }
   }
@@ -1138,41 +1298,83 @@ module.exports.exportFinancialData_get = catchAsync(async (req, res) => {
     "Discount": o.discountAmount || 0,
     "Coupon": o.couponCode || "",
     "Tax": o.taxAmount || 0,
-    "Shipping": o.shippingCharge || 0,
+    "Shipping": o.shippingAmount || 0,
     "GrandTotal": o.grandTotal || 0,
     "PaymentMode": o.payment_mode || "",
     "PaymentStatus": o.payment_status || "",
     "OrderStatus": o.order_status || "",
+    "DeliveryPartner": o.deliveryPartner || "",
+    "ShippingCostToPartner": o.shippingCostToPartner || 0,
     "City": o.shippingAddress?.city || "",
     "State": o.shippingAddress?.state || ""
   }));
 
-  // Sheet 2: Revenue Summary (grouped by date)
-  const revenueSummary = await User_Order.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
-        orders: { $sum: 1 },
-        subtotal: { $sum: { $ifNull: ["$subtotal", 0] } },
-        discounts: { $sum: { $ifNull: ["$discountAmount", 0] } },
-        tax: { $sum: { $ifNull: ["$taxAmount", 0] } },
-        shipping: { $sum: { $ifNull: ["$shippingCharge", 0] } },
-        netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } }
+  // Sheet 2: Revenue & Profit Summary (grouped by date)
+  // Two-stage: order-level fields + item-level COGS
+  const [revenueSummary, cogsSummary] = await Promise.all([
+    User_Order.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          orders: { $sum: 1 },
+          subtotal: { $sum: { $ifNull: ["$subtotal", 0] } },
+          discounts: { $sum: { $ifNull: ["$discountAmount", 0] } },
+          tax: { $sum: { $ifNull: ["$taxAmount", 0] } },
+          shipping: { $sum: { $ifNull: ["$shippingAmount", 0] } },
+          shippingCostToPartner: { $sum: { $ifNull: ["$shippingCostToPartner", 0] } },
+          netRevenue: { $sum: { $ifNull: ["$grandTotal", 0] } },
+          onlinePaymentTotal: {
+            $sum: { $cond: [{ $eq: ["$payment_mode", "ONLINE"] }, { $ifNull: ["$grandTotal", 0] }, 0] }
+          }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]),
+    User_Order.aggregate([
+      { $match: match },
+      { $unwind: { path: "$items", preserveNullAndEmptyArrays: false } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          metalCost: {
+            $sum: { $multiply: [{ $ifNull: ["$items.priceBreakdownSnapshot.metalCost", 0] }, { $ifNull: ["$items.quantity", 1] }] }
+          },
+          gemstoneCost: {
+            $sum: { $multiply: [{ $ifNull: ["$items.priceBreakdownSnapshot.gemstoneCost", 0] }, { $ifNull: ["$items.quantity", 1] }] }
+          }
+        }
       }
-    },
-    { $sort: { _id: 1 } }
+    ])
   ]);
 
-  const revenueSheet = revenueSummary.map(r => ({
-    "Period": r._id,
-    "Orders": r.orders,
-    "Subtotal": r.subtotal,
-    "Discounts": r.discounts,
-    "Tax": r.tax,
-    "Shipping": r.shipping,
-    "Net Revenue": r.netRevenue
-  }));
+  // Merge COGS into revenue summary by date
+  const cogsMap = {};
+  for (const c of cogsSummary) { cogsMap[c._id] = c; }
+
+  const revenueSheet = revenueSummary.map(r => {
+    const cogs = cogsMap[r._id] || {};
+    const metalCost = Math.round((cogs.metalCost || 0) * 100) / 100;
+    const gemstoneCost = Math.round((cogs.gemstoneCost || 0) * 100) / 100;
+    const grossProfit = Math.round((r.subtotal - metalCost - gemstoneCost) * 100) / 100;
+    const gatewayFees = Math.round((r.onlinePaymentTotal || 0) * 0.02 * 100) / 100;
+    const pbt = Math.round((grossProfit - r.discounts + r.shipping - (r.shippingCostToPartner || 0) - gatewayFees) * 100) / 100;
+    return {
+      "Period": r._id,
+      "Orders": r.orders,
+      "Gross Revenue": r.subtotal,
+      "Metal Cost": metalCost,
+      "Gemstone Cost": gemstoneCost,
+      "Gross Profit": grossProfit,
+      "Discounts": r.discounts,
+      "Shipping Revenue": r.shipping,
+      "Shipping Cost": r.shippingCostToPartner || 0,
+      "Gateway Fees": gatewayFees,
+      "Profit Before Tax": pbt,
+      "Tax Collected (pass-through)": r.tax,
+      "Net Revenue": r.netRevenue
+    };
+  });
 
   // Sheet 3: Inventory
   const inventoryItems = await Inventory.find({})

@@ -81,6 +81,8 @@ const category_hierarchy_routes = require("./routes/category-hierarchy.routes");
 const subcategory_v2_routes = require("./routes/subcategory-v2.routes");
 const product_pricing_routes = require("./routes/product-pricing.routes");
 const dashboard_analytics_routes = require("./routes/dashboard-analytics.routes");
+const rfid_tag_routes = require("./routes/rfid-tag.routes");
+const audit_log_routes = require("./routes/audit-log.routes");
 
 const passport = require("./utility/passport");
 
@@ -125,6 +127,12 @@ database.once("connected", () => {
 
   // Schedule MCX price fetch (runs daily at 9 AM IST)
   scheduleMCXPriceFetch();
+
+  // Recover stale batch jobs from server crashes
+  const metalPriceService = require("./services/metal-price.service");
+  metalPriceService.recoverStaleJobs().catch((err) => {
+    console.error("Batch job recovery failed:", err.message);
+  });
 
   console.log("Silver price will be managed manually by admin.");
 });
@@ -206,12 +214,52 @@ app.use(category_hierarchy_routes);
 app.use(subcategory_v2_routes);
 app.use(product_pricing_routes);
 app.use(dashboard_analytics_routes);
+app.use(rfid_tag_routes);
+app.use(audit_log_routes);
 
 // Use product sequence routes (for SKU generation)
 const product_sequence_routes = require("./routes/product-sequence.routes");
 app.use("/api/product-sequence", product_sequence_routes);
 
 //wrong routes
+// ==================== HEALTH CHECK ENDPOINTS ====================
+
+/**
+ * GET /health — Basic liveness probe
+ * Returns 200 if the process is running (for load balancers)
+ */
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * GET /ready — Readiness probe
+ * Checks MongoDB and Redis connectivity before accepting traffic
+ */
+app.get("/ready", async (req, res) => {
+  const checks = {};
+
+  // MongoDB check
+  checks.mongodb = mongoose.connection.readyState === 1 ? "connected" : "disconnected";
+
+  // Redis check
+  checks.redis = cacheService.isConnected ? "connected" : "disconnected";
+
+  const allHealthy = checks.mongodb === "connected";
+  // Redis is optional — don't fail readiness if Redis is down
+
+  res.status(allHealthy ? 200 : 503).json({
+    status: allHealthy ? "ready" : "not_ready",
+    checks,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.all("/", (req, res) => {
   res.status(400).end();
 });
