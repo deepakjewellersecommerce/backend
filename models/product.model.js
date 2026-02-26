@@ -359,8 +359,12 @@ productSchema.index({ isActive: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ calculatedPrice: 1 });
 productSchema.index({ categoryHierarchyPath: 1 });
-// Compound index for filtering
+// Compound indexes for common query patterns
 productSchema.index({ isActive: 1, metalType: 1, pricingMode: 1 });
+productSchema.index({ categoryId: 1, isActive: 1 });
+productSchema.index({ subcategoryId: 1, isActive: 1 });
+productSchema.index({ metalType: 1, isActive: 1, pricingMode: 1, allComponentsFrozen: 1 });
+productSchema.index({ categoryId: 1, isActive: 1, calculatedPrice: 1 });
 
 // Virtual: Weight difference percentage
 productSchema.virtual("weightDifferencePercent").get(function () {
@@ -725,6 +729,41 @@ productSchema.statics.validateGemstones = function (gemstones, grossWeight) {
 
   return { warnings, errors, valid: errors.length === 0 };
 };
+
+/**
+ * Post-save hook: Sync denormalized fields to RFID tags
+ * Runs fire-and-forget so it never blocks the product save response
+ */
+productSchema.post("save", function (doc) {
+  const fieldsToSync = {};
+  const modPaths = doc.modifiedPaths ? doc.modifiedPaths() : [];
+
+  // Map product fields → RFID denormalized fields
+  const syncMap = {
+    productTitle: "productTitle",
+    metalType: "metalType",
+    grossWeight: "grossWeight",
+    netWeight: "netWeight",
+    calculatedPrice: "calculatedPrice"
+  };
+
+  for (const [productField, rfidField] of Object.entries(syncMap)) {
+    if (modPaths.includes(productField) || modPaths.length === 0) {
+      fieldsToSync[rfidField] = doc[productField];
+    }
+  }
+
+  // Only update if there are fields to sync
+  if (Object.keys(fieldsToSync).length > 0) {
+    const { RfidTag } = require("./rfid-tag.model");
+    RfidTag.updateMany(
+      { product: doc._id },
+      { $set: fieldsToSync }
+    ).catch((err) => {
+      console.error("RFID denormalization sync failed (non-blocking):", err.message);
+    });
+  }
+});
 
 const Product = mongoose.model("Product", productSchema);
 

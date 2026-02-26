@@ -58,7 +58,7 @@ productSequenceSchema.index({ subcategoryId: 1, boxNumber: 1 }, { unique: true }
 
 /**
  * Static method: Get next SKU for a subcategory and box
- * Returns the SKU and increments the counter
+ * Uses atomic findOneAndUpdate to prevent race conditions and burned SKUs
  */
 productSequenceSchema.statics.getAndIncrementSequence = async function (
   subcategoryId,
@@ -66,31 +66,29 @@ productSequenceSchema.statics.getAndIncrementSequence = async function (
   categoryCode
 ) {
   try {
-    // Find or create the sequence document
-    let sequence = await this.findOne({ subcategoryId, boxNumber });
+    // Atomic upsert + increment — guarantees no two callers get the same number
+    const sequence = await this.findOneAndUpdate(
+      { subcategoryId, boxNumber },
+      {
+        $inc: { nextProductNumber: 1 },
+        $set: { lastAssignedAt: new Date(), categoryCode },
+        $setOnInsert: { subcategoryId, boxNumber },
+      },
+      {
+        new: false,            // Return the document BEFORE increment (so we get the number we're assigning)
+        upsert: true,          // Create if it doesn't exist
+        setDefaultsOnInsert: true,
+      }
+    );
 
-    if (!sequence) {
-      // Create new sequence if it doesn't exist
-      sequence = new this({
-        subcategoryId,
-        boxNumber,
-        categoryCode,
-        nextProductNumber: 1,
-      });
-      await sequence.save();
-    }
+    const assignedNumber = sequence ? sequence.nextProductNumber : 1;
 
     // Generate SKU: categoryCodeBOX{boxNumber}{productNumber}
-    const sku = `${categoryCode}BOX${boxNumber}${sequence.nextProductNumber}`;
-
-    // Increment for next call
-    sequence.nextProductNumber += 1;
-    sequence.lastAssignedAt = new Date();
-    await sequence.save();
+    const sku = `${categoryCode}BOX${boxNumber}${assignedNumber}`;
 
     return {
       sku,
-      productNumber: sequence.nextProductNumber - 1, // Return the number we just assigned
+      productNumber: assignedNumber,
     };
   } catch (error) {
     throw new Error(`Failed to get next sequence: ${error.message}`);

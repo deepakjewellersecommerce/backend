@@ -25,7 +25,6 @@ const priceComponentSchema = new mongoose.Schema(
     key: {
       type: String,
       required: [true, "Component key is required"],
-      unique: true,
       lowercase: true,
       trim: true,
       validate: {
@@ -113,7 +112,7 @@ const priceComponentSchema = new mongoose.Schema(
 );
 
 // Indexes
-priceComponentSchema.index({ key: 1 }, { unique: true });
+priceComponentSchema.index({ key: 1 }, { unique: true, partialFilterExpression: { isDeleted: false } });
 priceComponentSchema.index({ isSystemComponent: 1 });
 priceComponentSchema.index({ isActive: 1 });
 priceComponentSchema.index({ isDeleted: 1 });
@@ -236,6 +235,8 @@ priceComponentSchema.methods.softDelete = async function () {
   this.isDeleted = true;
   this.deletedAt = new Date();
   this.isActive = false;
+  // Mangle key so the unique index won't block re-creation
+  this.key = `${this.key}_deleted_${this._id}`;
   return this.save();
 };
 

@@ -18,6 +18,7 @@ const namedColors = require("color-name-list");
 const ProductImage = require("../models/product_images");
 const silverPriceService = require("../services/silver-price.service");
 const cacheService = require("../services/cache.service");
+const { logAudit, AUDIT_ACTIONS, AUDIT_ENTITIES } = require("../models/audit-log.model");
 const Inventory = require("../models/inventory.model");
 const ProductSequence = require("../models/product-sequence.model");
 const Subcategory = require("../models/subcategory.model.js");
@@ -127,7 +128,16 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
       cloudinaryPublicIds.push(data.public_id);
     }
   }
-  productData.productImageUrl = imageUrls;
+  // Only overwrite productImageUrl when actual files were uploaded;
+  // otherwise keep any URL(s) that came in the JSON payload.
+  if (imageUrls.length > 0) {
+    productData.productImageUrl = imageUrls;
+  } else if (!Array.isArray(productData.productImageUrl)) {
+    // Normalise to array when no file upload and a URL string was passed
+    productData.productImageUrl = productData.productImageUrl
+      ? [productData.productImageUrl]
+      : [];
+  }
 
   const product = new Product(productData);
 
@@ -304,8 +314,21 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
   const product = await Product.findById(productId);
   if (!product) return errorRes(res, 400, "Product not found.");
 
-  // Update product fields
-  Object.assign(product, productData);
+  // Only allow updating safe fields — never overwrite identity/hierarchy fields
+  const allowedEditFields = [
+    'productTitle', 'productSlug', 'productDescription', 'careHandling',
+    'grossWeight', 'netWeight', 'gemstones',
+    'pricingMode', 'staticPrice', 'salePrice',
+    'isActive', 'isFeatured',
+    'productImageUrl', 'seoTitle', 'seoDescription',
+  ];
+  const safeData = {};
+  for (const key of allowedEditFields) {
+    if (productData[key] !== undefined) {
+      safeData[key] = productData[key];
+    }
+  }
+  Object.assign(product, safeData);
   const updatedProduct = await product.save();
 
   // Recalculate price if pricing-related or weight/gemstone fields were updated
@@ -326,6 +349,7 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
 module.exports.allProducts_get = catchAsync(async (req, res) => {
   const search = req.query.search;
   const categoryId = req.query.categoryId;
+  const subcategoryId = req.query.subcategoryId;
   const isAdmin = req?.user?.role == "admin";
   const filter = {};
 
@@ -337,7 +361,10 @@ module.exports.allProducts_get = catchAsync(async (req, res) => {
     filter.isActive = true;
   }
 
-  if (categoryId && mongoose.isValidObjectId(categoryId)) {
+  // subcategoryId takes priority; fall back to categoryId (which also covers nested subcategories)
+  if (subcategoryId && mongoose.isValidObjectId(subcategoryId)) {
+    filter.subcategoryId = subcategoryId;
+  } else if (categoryId && mongoose.isValidObjectId(categoryId)) {
     const nested = await getAllNestedSubcategories(categoryId);
     const categoryIds = nested.map((c) => c._id.toString());
     categoryIds.push(categoryId);
@@ -399,31 +426,68 @@ module.exports.deleteProduct_delete = catchAsync(async (req, res) => {
     return errorRes(res, 400, "Invalid product id");
   }
 
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     // Find product and delete associated images from Cloudinary
-    const product = await Product.findById(productId);
+    const product = await Product.findById(productId).session(session);
     if (!product) {
+      await session.abortTransaction();
+      session.endSession();
       return errorRes(res, 404, "Product not found");
     }
 
-    // Delete images from Cloudinary
-    if (product.productImageUrl && Array.isArray(product.productImageUrl)) {
-      for (const imageUrl of product.productImageUrl) {
-        try {
-          await deleteFromCloudinary(imageUrl);
-        } catch (err) {
-          console.error("Error deleting image from Cloudinary:", err);
-        }
+    // Delete images from Cloudinary (best-effort, outside transaction)
+    const imageUrls = product.productImageUrl || [];
+
+    // Cascade delete: variants, RFID tags, inventory
+    const { RfidTag } = require("../models/rfid-tag.model");
+
+    const [variantsDeleted, rfidDeleted, inventoryDeleted] = await Promise.all([
+      ProductVariant.deleteMany({ productId }).session(session),
+      RfidTag.deleteMany({ product: productId }).session(session),
+      Inventory.deleteMany({ product: productId }).session(session),
+    ]);
+
+    // Delete the product itself
+    await Product.findByIdAndDelete(productId).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Cleanup Cloudinary images after successful transaction (best-effort)
+    for (const imageUrl of imageUrls) {
+      try {
+        await deleteFromCloudinary(imageUrl);
+      } catch (err) {
+        console.error("Error deleting image from Cloudinary:", err);
       }
     }
 
-    // Delete product from database
-    const deletedProduct = await Product.findByIdAndDelete(productId);
+    // Audit log (fire-and-forget)
+    logAudit({
+      entityType: AUDIT_ENTITIES.PRODUCT,
+      entityId: product._id,
+      action: AUDIT_ACTIONS.DELETE,
+      actorId: req.admin?._id || req.user?._id,
+      actorName: req.admin?.name || "Admin",
+      summary: `Deleted product "${product.productTitle}" (${product.skuNo})`,
+      changes: { before: { title: product.productTitle, skuNo: product.skuNo, metalType: product.metalType } },
+      metadata: { variants: variantsDeleted.deletedCount, rfidTags: rfidDeleted.deletedCount, inventory: inventoryDeleted.deletedCount }
+    });
+
     return successRes(res, {
-      product: deletedProduct,
-      message: "Product deleted successfully.",
+      message: "Product and all related data deleted successfully.",
+      deleted: {
+        variants: variantsDeleted.deletedCount,
+        rfidTags: rfidDeleted.deletedCount,
+        inventory: inventoryDeleted.deletedCount,
+      },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     console.error("Error deleting product:", error);
     return internalServerError(res, error);
   }

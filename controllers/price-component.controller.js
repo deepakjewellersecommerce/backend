@@ -73,7 +73,7 @@ module.exports.getComponent = catchAsync(async (req, res) => {
 
     // Check if it's a MongoDB ObjectId
     if (idOrKey.match(/^[0-9a-fA-F]{24}$/)) {
-      component = await PriceComponent.findById(idOrKey);
+      component = await PriceComponent.findOne({ _id: idOrKey, isDeleted: false });
     } else {
       component = await PriceComponent.getByKey(idOrKey);
     }
@@ -121,8 +121,8 @@ module.exports.createComponent = catchAsync(async (req, res) => {
       return errorRes(res, 400, "Valid calculation type is required");
     }
 
-    // Check if key already exists
-    const existing = await PriceComponent.findOne({ key: key.toLowerCase() });
+    // Check if key already exists (exclude soft-deleted)
+    const existing = await PriceComponent.findOne({ key: key.toLowerCase(), isDeleted: false });
     if (existing) {
       return errorRes(res, 400, `Component with key "${key}" already exists`);
     }
