@@ -12,6 +12,7 @@ const {
 } = require("../models/metal-price.model");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
+const { logAudit, AUDIT_ACTIONS, AUDIT_ENTITIES } = require("../models/audit-log.model");
 
 /**
  * Get all current metal prices
@@ -65,6 +66,9 @@ module.exports.getMetalPrice = catchAsync(async (req, res) => {
 /**
  * Manual update metal price
  * PUT /api/admin/metal-prices/:metalType
+ *
+ * After updating the price, auto-triggers product price recalculation
+ * for all affected products (non-static, non-frozen).
  */
 module.exports.updateMetalPrice = catchAsync(async (req, res) => {
   try {
@@ -90,12 +94,38 @@ module.exports.updateMetalPrice = catchAsync(async (req, res) => {
       metalType
     );
 
+    // Auto-trigger product price recalculation
+    let recalcResult = null;
+    if (affectedCount > 0) {
+      try {
+        recalcResult = await metalPriceService.executeBulkRecalculation(
+          [metalType],
+          { triggeredBy: adminName }
+        );
+      } catch (recalcError) {
+        console.error("Price recalculation failed (non-blocking):", recalcError);
+        recalcResult = { error: recalcError.message };
+      }
+    }
+
+    logAudit({
+      entityType: AUDIT_ENTITIES.METAL_PRICE,
+      entityId: updatedPrice._id,
+      action: AUDIT_ACTIONS.PRICE_CHANGE,
+      actorId: req.admin?._id,
+      actorName: adminName,
+      summary: `Updated ${metalType} price to ₹${pricePerGram}/g`,
+      changes: { after: { metalType, pricePerGram } },
+      metadata: { affectedProducts: affectedCount, recalculated: recalcResult?.updated || 0 }
+    });
+
     successRes(res, {
       price: {
         ...updatedPrice.toObject(),
         affectedProductsCount: affectedCount
       },
-      message: `${metalType} price updated successfully`
+      recalculation: recalcResult,
+      message: `${metalType} price updated successfully${affectedCount > 0 ? ` and ${recalcResult?.updated || 0} product prices recalculated` : ""}`
     });
   } catch (error) {
     console.error("Error updating metal price:", error);
@@ -384,5 +414,77 @@ module.exports.getMetalTypes = catchAsync(async (req, res) => {
   successRes(res, {
     types,
     message: "Metal types retrieved successfully"
+  });
+});
+
+/**
+ * Get batch jobs (recalculation history)
+ * GET /api/admin/metal-prices/batch-jobs
+ */
+module.exports.getBatchJobs = catchAsync(async (req, res) => {
+  const { BatchJob } = require("../models/batch-job.model");
+  const { status, limit = 20, offset = 0 } = req.query;
+
+  const filter = {};
+  if (status) filter.status = status;
+
+  const [jobs, total] = await Promise.all([
+    BatchJob.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(parseInt(offset))
+      .limit(Math.min(parseInt(limit), 50))
+      .lean(),
+    BatchJob.countDocuments(filter)
+  ]);
+
+  successRes(res, { jobs, total });
+});
+
+/**
+ * Get single batch job details
+ * GET /api/admin/metal-prices/batch-jobs/:jobId
+ */
+module.exports.getBatchJob = catchAsync(async (req, res) => {
+  const { BatchJob } = require("../models/batch-job.model");
+  const { jobId } = req.params;
+
+  const job = await BatchJob.findById(jobId).lean();
+  if (!job) {
+    return errorRes(res, 404, "Batch job not found");
+  }
+
+  successRes(res, { job });
+});
+
+/**
+ * Retry a failed batch job
+ * POST /api/admin/metal-prices/batch-jobs/:jobId/retry
+ */
+module.exports.retryBatchJob = catchAsync(async (req, res) => {
+  const { BatchJob, BATCH_JOB_STATUS } = require("../models/batch-job.model");
+  const { jobId } = req.params;
+
+  const job = await BatchJob.findById(jobId);
+  if (!job) {
+    return errorRes(res, 404, "Batch job not found");
+  }
+
+  if (![BATCH_JOB_STATUS.FAILED, BATCH_JOB_STATUS.PARTIAL].includes(job.status)) {
+    return errorRes(res, 400, "Only failed or partial jobs can be retried");
+  }
+
+  if (job.attempts >= job.maxAttempts) {
+    return errorRes(res, 400, `Job has exceeded maximum retry attempts (${job.maxAttempts})`);
+  }
+
+  // Re-execute the recalculation
+  const result = await metalPriceService.executeBulkRecalculation(
+    job.params.metalTypes,
+    { triggeredBy: req.admin?.name || "Admin (retry)" }
+  );
+
+  successRes(res, {
+    ...result,
+    message: "Batch job retried successfully"
   });
 });

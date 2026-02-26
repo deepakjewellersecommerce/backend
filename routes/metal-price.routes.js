@@ -7,6 +7,7 @@ const express = require("express");
 const router = express.Router();
 const metalPriceController = require("../controllers/metal-price.controller");
 const { requireAdminLogin } = require("../middlewares/requireLogin");
+const { validateUpdateMetalPrice } = require("../validation/category-hierarchy.validation");
 
 // ==================== PUBLIC ROUTES ====================
 
@@ -43,6 +44,25 @@ router.post(
   metalPriceController.bulkFetchMetalPrices
 );
 
+// Batch jobs (must be before :metalType param routes)
+router.get(
+  "/admin/metal-prices/batch-jobs",
+  requireAdminLogin,
+  metalPriceController.getBatchJobs
+);
+
+router.get(
+  "/admin/metal-prices/batch-jobs/:jobId",
+  requireAdminLogin,
+  metalPriceController.getBatchJob
+);
+
+router.post(
+  "/admin/metal-prices/batch-jobs/:jobId/retry",
+  requireAdminLogin,
+  metalPriceController.retryBatchJob
+);
+
 // Bulk recalculation preview
 router.post(
   "/admin/metal-prices/bulk-recalculate/preview",
@@ -68,6 +88,7 @@ router.get(
 router.put(
   "/admin/metal-prices/:metalType",
   requireAdminLogin,
+  validateUpdateMetalPrice,
   metalPriceController.updateMetalPrice
 );
 

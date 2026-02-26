@@ -449,48 +449,118 @@ class MetalPriceService {
   }
 
   /**
-   * Execute bulk recalculation
+   * Execute bulk recalculation with job persistence
+   * Creates a BatchJob record to track progress, enable retries, and survive crashes
    */
   async executeBulkRecalculation(metalTypes, options = {}) {
     const { Product } = require("../models/product.model");
-    const { onProgress } = options;
+    const { BatchJob, BATCH_JOB_TYPE } = require("../models/batch-job.model");
+    const { onProgress, triggeredBy = "System" } = options;
+
+    // Create job record
+    const job = await BatchJob.create({
+      type: BATCH_JOB_TYPE.PRICE_RECALCULATION,
+      params: { metalTypes },
+      triggeredBy
+    });
+
+    await job.markRunning();
 
     const results = {
       updated: 0,
       skipped: 0,
       failed: 0,
-      failures: []
+      failures: [],
+      jobId: job._id
     };
 
-    for (const metalType of metalTypes) {
-      const bulkResult = await Product.bulkRecalculate(metalType, {
-        batchSize: 100,
-        onProgress: (progress) => {
-          if (onProgress) {
-            onProgress({
-              metalType,
-              ...progress
-            });
+    try {
+      for (const metalType of metalTypes) {
+        const bulkResult = await Product.bulkRecalculate(metalType, {
+          batchSize: 100,
+          onProgress: (progress) => {
+            if (onProgress) {
+              onProgress({ metalType, ...progress });
+            }
           }
+        });
+
+        results.updated += bulkResult.success;
+        results.failed += bulkResult.failed;
+        results.failures.push(...bulkResult.failures);
+
+        // Persist progress after each metal type
+        await job.updateProgress({
+          succeeded: results.updated,
+          failed: results.failed
+        });
+
+        // Track individual failures
+        for (const f of bulkResult.failures) {
+          job.addFailure(f.productId, f.error);
         }
+      }
+
+      // Count skipped (all frozen) products
+      const skippedCount = await Product.countDocuments({
+        metalType: { $in: metalTypes },
+        isActive: true,
+        pricingMode: { $ne: "STATIC_PRICE" },
+        allComponentsFrozen: true
       });
 
-      results.updated += bulkResult.success;
-      results.failed += bulkResult.failed;
-      results.failures.push(...bulkResult.failures);
+      results.skipped = skippedCount;
+
+      await job.updateProgress({
+        succeeded: results.updated,
+        failed: results.failed,
+        skipped: skippedCount,
+        processed: results.updated + results.failed + skippedCount
+      });
+      await job.markCompleted(results);
+
+      return results;
+    } catch (error) {
+      await job.markFailed(error.message);
+      throw error;
     }
+  }
 
-    // Count skipped (all frozen) products
-    const skippedCount = await Product.countDocuments({
-      metalType: { $in: metalTypes },
-      isActive: true,
-      pricingMode: { $ne: "STATIC_PRICE" },
-      allComponentsFrozen: true
-    });
+  /**
+   * Recover stale RUNNING jobs (e.g., from server crash)
+   * Called on server startup
+   */
+  async recoverStaleJobs() {
+    try {
+      const { BatchJob, BATCH_JOB_STATUS } = require("../models/batch-job.model");
 
-    results.skipped = skippedCount;
+      // Mark RUNNING jobs older than 10 minutes as failed (likely crashed)
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+      const staleJobs = await BatchJob.find({
+        status: BATCH_JOB_STATUS.RUNNING,
+        startedAt: { $lt: tenMinutesAgo }
+      });
 
-    return results;
+      for (const job of staleJobs) {
+        await job.markFailed("Server crashed or restarted during execution");
+        console.warn(`Marked stale batch job ${job._id} as failed`);
+      }
+
+      // Retry pending jobs
+      const retryableJobs = await BatchJob.getRetryableJobs();
+      for (const job of retryableJobs) {
+        console.log(`Retrying batch job ${job._id} (attempt ${job.attempts + 1})`);
+        try {
+          await this.executeBulkRecalculation(job.params.metalTypes, {
+            triggeredBy: "System (auto-retry)"
+          });
+        } catch (err) {
+          console.error(`Retry failed for job ${job._id}:`, err.message);
+        }
+      }
+    } catch (error) {
+      console.error("Error recovering stale jobs:", error.message);
+    }
   }
 
   /**
