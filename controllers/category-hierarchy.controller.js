@@ -12,6 +12,7 @@ const { Product } = require("../models/product.model");
 const Subcategory = require("../models/subcategory.model.js");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
+const { logAudit, AUDIT_ACTIONS, AUDIT_ENTITIES } = require("../models/audit-log.model");
 
 // ==================== METAL GROUPS (Base Metals) ====================
 
@@ -827,6 +828,255 @@ module.exports.updateCategory = catchAsync(async (req, res) => {
     console.error("Error updating category:", error);
     internalServerError(res, error.message);
   }
+});
+
+/**
+ * Delete category
+ * DELETE /api/admin/categories/categories/:id
+ */
+module.exports.deleteCategory = catchAsync(async (req, res) => {
+  const mongoose = require("mongoose");
+  const { id } = req.params;
+  const { force = false } = req.query;
+
+  const category = await Category.findById(id);
+  if (!category) {
+    return errorRes(res, 404, "Category not found");
+  }
+
+  // Check for subcategories
+  const subcategoriesCount = await Subcategory.countDocuments({ categoryId: id });
+  // Check for direct products
+  const productsCount = await Product.countDocuments({ categoryId: id });
+
+  if ((subcategoriesCount > 0 || productsCount > 0) && force !== "true") {
+    return errorRes(
+      res,
+      400,
+      `Cannot delete category. It has ${subcategoriesCount} subcategories and ${productsCount} products. Use force=true to cascade delete everything.`
+    );
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const ProductVariant = require("../models/product_varient");
+    const { RfidTag } = require("../models/rfid-tag.model");
+    const Inventory = require("../models/inventory.model");
+    const SubcategoryPricing = require("../models/subcategory-pricing.model");
+
+    if (force === "true") {
+      // Find all products under this category
+      const productIds = await Product.find({ categoryId: id }).distinct("_id").session(session);
+
+      if (productIds.length > 0) {
+        // Cascade delete all product-related data
+        await Promise.all([
+          ProductVariant.deleteMany({ productId: { $in: productIds } }).session(session),
+          RfidTag.deleteMany({ product: { $in: productIds } }).session(session),
+          Inventory.deleteMany({ product: { $in: productIds } }).session(session),
+        ]);
+        // Delete products
+        await Product.deleteMany({ categoryId: id }).session(session);
+      }
+
+      // Delete subcategory pricing configs
+      const subcategoryIds = await Subcategory.find({ categoryId: id }).distinct("_id").session(session);
+      if (subcategoryIds.length > 0) {
+        await SubcategoryPricing.deleteMany({ subcategoryId: { $in: subcategoryIds } }).session(session);
+      }
+
+      // Delete all subcategories
+      await Subcategory.deleteMany({ categoryId: id }).session(session);
+    }
+
+    // Delete the category itself
+    await Category.findByIdAndDelete(id).session(session);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    logAudit({
+      entityType: AUDIT_ENTITIES.CATEGORY,
+      entityId: category._id,
+      action: AUDIT_ACTIONS.DELETE,
+      actorId: req.admin?._id,
+      actorName: req.admin?.name || "Admin",
+      summary: `Deleted category "${category.name}" (${category.fullCategoryId || category.idAttribute})`,
+      changes: { before: { name: category.name, idAttribute: category.idAttribute } },
+      metadata: { force: force === "true", subcategoriesDeleted: subcategoriesCount, productsDeleted: productsCount }
+    });
+
+    successRes(res, {
+      message: "Category deleted successfully",
+      deleted: {
+        subcategories: force === "true" ? subcategoriesCount : 0,
+        products: force === "true" ? productsCount : 0,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Error deleting category:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+// ==================== IMPACT & DELETE — Level 1 (Material) ====================
+
+/**
+ * Get material impact
+ * GET /api/admin/categories/materials/:id/impact
+ */
+module.exports.getMaterialImpact = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const material = await Material.findById(id);
+    if (!material) return errorRes(res, 404, "Material not found");
+
+    const [categoriesCount, subcategoriesCount, productsCount] = await Promise.all([
+      Category.countDocuments({ materialId: id }),
+      Subcategory.countDocuments({ materialId: id }),
+      Product.countDocuments({ materialId: id }),
+    ]);
+
+    successRes(res, {
+      impact: { categoriesCount, subcategoriesCount, productsCount },
+      message: "Material impact retrieved successfully",
+    });
+  } catch (error) {
+    console.error("Error getting material impact:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Delete material
+ * DELETE /api/admin/categories/materials/:id
+ */
+module.exports.deleteMaterial = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const material = await Material.findById(id);
+  if (!material) return errorRes(res, 404, "Material not found");
+
+  const categoriesCount = await Category.countDocuments({ materialId: id });
+  if (categoriesCount > 0) {
+    return errorRes(
+      res,
+      400,
+      `Cannot delete material. It is used by ${categoriesCount} categories. Delete or reassign those categories first.`
+    );
+  }
+
+  await Material.findByIdAndDelete(id);
+  logAudit({ entityType: AUDIT_ENTITIES.MATERIAL, entityId: material._id, action: AUDIT_ACTIONS.DELETE, actorId: req.admin?._id, actorName: req.admin?.name || "Admin", summary: `Deleted material "${material.name}"`, changes: { before: { name: material.name, idAttribute: material.idAttribute } } });
+  successRes(res, { message: "Material deleted successfully" });
+});
+
+// ==================== IMPACT & DELETE — Level 2 (Gender) ====================
+
+/**
+ * Get gender impact
+ * GET /api/admin/categories/genders/:id/impact
+ */
+module.exports.getGenderImpact = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const gender = await Gender.findById(id);
+    if (!gender) return errorRes(res, 404, "Gender not found");
+
+    const [categoriesCount, subcategoriesCount, productsCount] = await Promise.all([
+      Category.countDocuments({ genderId: id }),
+      Subcategory.countDocuments({ genderId: id }),
+      Product.countDocuments({ genderId: id }),
+    ]);
+
+    successRes(res, {
+      impact: { categoriesCount, subcategoriesCount, productsCount },
+      message: "Gender impact retrieved successfully",
+    });
+  } catch (error) {
+    console.error("Error getting gender impact:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Delete gender
+ * DELETE /api/admin/categories/genders/:id
+ */
+module.exports.deleteGender = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const gender = await Gender.findById(id);
+  if (!gender) return errorRes(res, 404, "Gender not found");
+
+  const categoriesCount = await Category.countDocuments({ genderId: id });
+  if (categoriesCount > 0) {
+    return errorRes(
+      res,
+      400,
+      `Cannot delete gender. It is used by ${categoriesCount} categories. Delete or reassign those categories first.`
+    );
+  }
+
+  await Gender.findByIdAndDelete(id);
+  logAudit({ entityType: AUDIT_ENTITIES.GENDER, entityId: gender._id, action: AUDIT_ACTIONS.DELETE, actorId: req.admin?._id, actorName: req.admin?.name || "Admin", summary: `Deleted gender "${gender.name}"`, changes: { before: { name: gender.name, idAttribute: gender.idAttribute } } });
+  successRes(res, { message: "Gender deleted successfully" });
+});
+
+// ==================== IMPACT & DELETE — Level 3 (Item) ====================
+
+/**
+ * Get item impact
+ * GET /api/admin/categories/items/:id/impact
+ */
+module.exports.getItemImpact = catchAsync(async (req, res) => {
+  try {
+    const { id } = req.params;
+    const item = await Item.findById(id);
+    if (!item) return errorRes(res, 404, "Item not found");
+
+    const [categoriesCount, subcategoriesCount, productsCount] = await Promise.all([
+      Category.countDocuments({ itemId: id }),
+      Subcategory.countDocuments({ itemId: id }),
+      Product.countDocuments({ itemId: id }),
+    ]);
+
+    successRes(res, {
+      impact: { categoriesCount, subcategoriesCount, productsCount },
+      message: "Item impact retrieved successfully",
+    });
+  } catch (error) {
+    console.error("Error getting item impact:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Delete item
+ * DELETE /api/admin/categories/items/:id
+ */
+module.exports.deleteItem = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const item = await Item.findById(id);
+  if (!item) return errorRes(res, 404, "Item not found");
+
+  const categoriesCount = await Category.countDocuments({ itemId: id });
+  if (categoriesCount > 0) {
+    return errorRes(
+      res,
+      400,
+      `Cannot delete item. It is used by ${categoriesCount} categories. Delete or reassign those categories first.`
+    );
+  }
+
+  await Item.findByIdAndDelete(id);
+  logAudit({ entityType: AUDIT_ENTITIES.ITEM, entityId: item._id, action: AUDIT_ACTIONS.DELETE, actorId: req.admin?._id, actorName: req.admin?.name || "Admin", summary: `Deleted item "${item.name}"`, changes: { before: { name: item.name, idAttribute: item.idAttribute } } });
+  successRes(res, { message: "Item deleted successfully" });
 });
 
 // ==================== SUBCATEGORIES FLAT LIST ====================

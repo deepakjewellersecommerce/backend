@@ -8,6 +8,18 @@ const router = express.Router();
 const categoryHierarchyController = require("../controllers/category-hierarchy.controller");
 const { requireAdminLogin } = require("../middlewares/requireLogin");
 const { validateObjectId } = require("../middlewares/validation");
+const {
+  validateCreateMaterial,
+  validateUpdateMaterial,
+  validateCreateGender,
+  validateUpdateGender,
+  validateCreateItem,
+  validateUpdateItem,
+  validateCreateCategory,
+  validateUpdateCategory,
+  validateUpdateMetalGroup,
+  validateUpdateMetalGroupPremium,
+} = require("../validation/category-hierarchy.validation");
 
 // ==================== METAL GROUPS (Base Metals) ====================
 
@@ -31,6 +43,7 @@ router.put(
   "/admin/categories/metal-groups/:id",
   requireAdminLogin,
   validateObjectId,
+  validateUpdateMetalGroup,
   categoryHierarchyController.updateMetalGroup
 );
 
@@ -39,6 +52,7 @@ router.put(
   "/admin/categories/metal-groups/:id/premium",
   requireAdminLogin,
   validateObjectId,
+  validateUpdateMetalGroupPremium,
   categoryHierarchyController.updateMetalGroupPremium
 );
 
@@ -85,6 +99,7 @@ router.get(
 router.post(
   "/admin/categories/materials",
   requireAdminLogin,
+  validateCreateMaterial,
   categoryHierarchyController.createMaterial
 );
 
@@ -99,7 +114,22 @@ router.put(
   "/admin/categories/materials/:id",
   requireAdminLogin,
   validateObjectId("id"),
+  validateUpdateMaterial,
   categoryHierarchyController.updateMaterial
+);
+
+router.get(
+  "/admin/categories/materials/:id/impact",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.getMaterialImpact
+);
+
+router.delete(
+  "/admin/categories/materials/:id",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.deleteMaterial
 );
 
 // ==================== GENDERS (Level 2) ====================
@@ -113,6 +143,7 @@ router.get(
 router.post(
   "/admin/categories/genders",
   requireAdminLogin,
+  validateCreateGender,
   categoryHierarchyController.createGender
 );
 
@@ -127,7 +158,22 @@ router.put(
   "/admin/categories/genders/:id",
   requireAdminLogin,
   validateObjectId("id"),
+  validateUpdateGender,
   categoryHierarchyController.updateGender
+);
+
+router.get(
+  "/admin/categories/genders/:id/impact",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.getGenderImpact
+);
+
+router.delete(
+  "/admin/categories/genders/:id",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.deleteGender
 );
 
 // ==================== ITEMS (Level 3) ====================
@@ -141,6 +187,7 @@ router.get(
 router.post(
   "/admin/categories/items",
   requireAdminLogin,
+  validateCreateItem,
   categoryHierarchyController.createItem
 );
 
@@ -155,7 +202,22 @@ router.put(
   "/admin/categories/items/:id",
   requireAdminLogin,
   validateObjectId("id"),
+  validateUpdateItem,
   categoryHierarchyController.updateItem
+);
+
+router.get(
+  "/admin/categories/items/:id/impact",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.getItemImpact
+);
+
+router.delete(
+  "/admin/categories/items/:id",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.deleteItem
 );
 
 // ==================== CATEGORIES (Level 4) ====================
@@ -169,6 +231,7 @@ router.get(
 router.post(
   "/admin/categories/categories",
   requireAdminLogin,
+  validateCreateCategory,
   categoryHierarchyController.createCategory
 );
 
@@ -190,7 +253,15 @@ router.put(
   "/admin/categories/categories/:id",
   requireAdminLogin,
   validateObjectId("id"),
+  validateUpdateCategory,
   categoryHierarchyController.updateCategory
+);
+
+router.delete(
+  "/admin/categories/categories/:id",
+  requireAdminLogin,
+  validateObjectId("id"),
+  categoryHierarchyController.deleteCategory
 );
 
 module.exports = router;
