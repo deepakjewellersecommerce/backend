@@ -13,6 +13,7 @@ const {
   deleteFromCloudinary,
 } = require("../middlewares/Cloudinary");
 const catchAsync = require("../utility/catch-async");
+const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
 const InvoiceService = require("../services/invoice.service");
 const UserLoyalty = require("../models/user-loyalty.model");
 const fs = require("fs");
@@ -224,19 +225,25 @@ module.exports.downloadInvoice = catchAsync(async (req, res) => {
   }
 });
 
-module.exports.allusers_get = (req, res) => {
-  const search = req.query.search || "";
+module.exports.allusers_get = async (req, res) => {
+  try {
+    const search = req.query.search || "";
 
-  const filter = {};
-  if (search) {
-    filter.name = { $regex: search, $options: "i" };
+    const filter = {};
+    if (search) {
+      filter.name = { $regex: search, $options: "i" };
+    }
+
+    const result = await buildPaginatedSortedFilteredQuery(
+      User.find(filter).select("-password -__v").sort("name"),
+      req,
+      User
+    );
+
+    successRes(res, { users: result, total: result.total, limit: result.limit, page: result.page });
+  } catch (err) {
+    internalServerError(res, err);
   }
-
-  User.find(filter)
-    .sort("name")
-    .select("-password -__v")
-    .then((users) => successRes(res, { users }))
-    .catch((err) => internalServerError(res, err));
 };
 
 module.exports.blockUser_post = (req, res) => {

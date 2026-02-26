@@ -17,8 +17,8 @@ module.exports.errorRes = (res, code, message) => {
 };
 
 module.exports.internalServerError = (res, err) => {
-  console.log(err);
-  return this.errorRes(res, 500, "Internal server error.");
+  console.error(err);
+  return module.exports.errorRes(res, 500, "Internal server error.");
 };
 
 module.exports.shortIdChar =
@@ -51,7 +51,13 @@ module.exports.firstLetterCapitalInString = str => {
   return result;
 };
  
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  console.warn(
+    "WARNING: RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET env vars are not set. Payment features will fail."
+  );
+}
+
 module.exports.razorpayInstance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID||"rzp_test_8XQ",
-  key_secret: process.env.RAZORPAY_KEY_SECRET||"8XQ",
+  key_id: process.env.RAZORPAY_KEY_ID || "",
+  key_secret: process.env.RAZORPAY_KEY_SECRET || "",
 });
