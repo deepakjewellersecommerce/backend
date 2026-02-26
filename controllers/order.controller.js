@@ -20,42 +20,30 @@ const { addProductUpdateNotification } = require("./notification.controller");
 require("dotenv").config();
 
 module.exports.placeOrder_post = catchAsync(async (req, res) => {
-  const { products } = req.body;
+  const { products, shippingAddress, payment_mode, payment_status,
+          coupon_applied, discountAmount, shippingAmount, taxAmount } = req.body;
   const { _id: userId } = req.user;
 
-  //validate products and variants
-  if (!products || products.length == 0)
+  if (!products || products.length === 0)
     return errorRes(res, 400, "Cart is empty.");
 
-  const response = await Promise.all(
-    products.map(async (item) => {
-      const productQuery = Product.findById(item.product);
-      const variantQuery = ProductVariant.findById(item.variant);
+  // Map frontend products format to cartItems expected by createWithSnapshots
+  const cartItems = products.map((item) => ({
+    productId: item.product,
+    quantity: item.quantity,
+    variantId: item.variant || null
+  }));
 
-      const [product, variant] = await Promise.all([
-        productQuery,
-        variantQuery,
-      ]);
-
-      if (!product || !variant)
-        return errorRes(res, 400, "Invalid product or variant.");
-
-      if (variant.stock < item.quantity)
-        return errorRes(res, 400, "Out of stock.");
-
-      return {
-        product: product._id,
-        variant: variant._id,
-        quantity: item.quantity,
-        price: variant.price,
-      };
-    })
-  );
-
-  const order = await User_Order.create({
-    ...req.body,
-    products: response,
+  const order = await User_Order.createWithSnapshots({
+    cartItems,
     buyer: userId,
+    shippingAddress,
+    payment_mode: payment_mode || "COD",
+    payment_status: payment_status || "PENDING",
+    coupon_applied,
+    discountAmount,
+    shippingAmount,
+    taxAmount
   });
 
   return successRes(res, {
@@ -216,51 +204,61 @@ module.exports.userPreviousOrders_get = catchAsync(async (req, res) => {
     .catch((err) => internalServerError(res, err));
 });
 
-module.exports.updateOrder_post = catchAsync( async (req, res) => {
+module.exports.updateOrder_post = catchAsync(async (req, res) => {
   const { orderId } = req.params;
-  const { payment_status, order_status } = req.body;
-  const updates = {};
+  const { payment_status, order_status, trackingNumber, trackingUrl, adminNote, deliveryPartner, shippingCostToPartner } = req.body;
 
   if (!orderId) return errorRes(res, 400, "Order Id is required.");
-  
-  // Validate ObjectId format
+
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     return errorRes(res, 400, "Invalid Order ID format.");
   }
-  if (payment_status) updates.payment_status = payment_status;
-  if (order_status) updates.order_status = order_status;
 
-  if (Object.keys(updates).length == 0)
-    return errorRes(res, 400, "No updates made.");
+  if (!payment_status && !order_status && !trackingNumber && !trackingUrl && !adminNote && deliveryPartner === undefined && shippingCostToPartner === undefined) {
+    return errorRes(res, 400, "No updates provided.");
+  }
 
-  User_Order.findByIdAndUpdate(orderId, updates, {
-    new: true,
-    runValidators: true,
-  })
-    .then((updatedOrder) => {
-      if (!updatedOrder) return errorRes(res, 404, "Order does not exist.");
-      updatedOrder
-        .populate([
-          { path: "buyer", select: "_id displayName email" },
-          {
-            path: "products.product",
-            select:
-              "_id displayName brand_title color price product_category displayImage availability",
-          },
-          {
-            path: "coupon_applied",
-            select: "_id code condition min_price discount_percent is_active",
-          },
-        ])
-        .then((result) =>
-          successRes(res, {
-            updatedOrder: result,
-            message: "Order updated successfully.",
-          })
-        )
-        .catch((err) => internalServerError(res, err));
-    })
-    .catch((err) => internalServerError(res, err));
+  const order = await User_Order.findById(orderId);
+  if (!order) return errorRes(res, 404, "Order does not exist.");
+
+  // Update payment status directly
+  if (payment_status) {
+    order.payment_status = payment_status;
+  }
+
+  // Update tracking info
+  if (trackingNumber !== undefined) order.trackingNumber = trackingNumber;
+  if (trackingUrl !== undefined) order.trackingUrl = trackingUrl;
+  if (adminNote !== undefined) order.adminNote = adminNote;
+  if (deliveryPartner !== undefined) order.deliveryPartner = deliveryPartner;
+  if (shippingCostToPartner !== undefined) order.shippingCostToPartner = shippingCostToPartner;
+
+  // Update order status using the model's instance method (handles statusHistory + event timestamps + transition validation)
+  if (order_status && order_status !== order.order_status) {
+    try {
+      await order.updateStatus(order_status, adminNote || undefined, "admin");
+    } catch (err) {
+      if (err.statusCode === 400) {
+        return errorRes(res, 400, err.message);
+      }
+      throw err;
+    }
+  } else {
+    await order.save();
+  }
+
+  // Populate for response
+  await order.populate([
+    { path: "buyer", select: "_id displayName email" },
+    { path: "products.product" },
+    { path: "products.variant" },
+    { path: "coupon_applied" },
+  ]);
+
+  return successRes(res, {
+    updatedOrder: order,
+    message: "Order updated successfully.",
+  });
 });
 
 module.exports.userOrderUpadte_put = catchAsync(async (req, res) => {
@@ -337,89 +335,90 @@ module.exports.rzpPaymentVerification = async (req, res) => {
 
   try {
     const {
-      // razorpay payment verification
       orderCreationId,
       razorpayPaymentId,
       razorpayOrderId,
       razorpaySignature,
-      // update db
       products,
-      order_price,
       coupon_applied,
       shippingAddress,
       payment_mode,
+      discountAmount,
+      shippingAmount,
+      taxAmount,
     } = req.body;
 
     const shasum = crypto.createHmac("sha256", process.env.RAZORPAY_KEY_SECRET);
     shasum.update(`${orderCreationId}|${razorpayPaymentId}`);
     const digest = shasum.digest("hex");
 
-    // comaparing our digest with the actual signature
-
-    const order = new User_Order({
-      buyer: userId,
-      products,
-      order_price,
-      coupon_applied,
-      shippingAddress,
-      payment_mode,
-      payment_status: "COMPLETE",
-      rzp_orderId: razorpayOrderId,
-      rzp_paymentId: razorpayPaymentId,
-    });
-
     if (digest !== razorpaySignature) {
-      order.payment_status = "FAILED";
-      await order.save();
-
+      // Signature mismatch — create a failed order for audit trail
+      const failedOrder = await User_Order.create({
+        buyer: userId,
+        products: products || [],
+        payment_mode: payment_mode || "ONLINE",
+        payment_status: "FAILED",
+        cc_orderId: razorpayOrderId,
+        shippingAddress,
+      });
       return errorRes(res, 400, "Transaction not legit!.");
     }
 
-    // empty cart
-    const cart = await User_Cart.findOne({ user: userId });
-    cart.products = [];
-    const updatedCart = await cart.save();
+    // Map frontend products to cartItems
+    const cartItems = (products || []).map((item) => ({
+      productId: item.product,
+      quantity: item.quantity,
+      variantId: item.variant || null
+    }));
 
-    // update products' availability
+    const order = await User_Order.createWithSnapshots({
+      cartItems,
+      buyer: userId,
+      shippingAddress,
+      payment_mode: payment_mode || "ONLINE",
+      payment_status: "COMPLETE",
+      cc_orderId: razorpayOrderId,
+      coupon_applied,
+      discountAmount,
+      shippingAmount,
+      taxAmount,
+    });
+
+    // Empty cart
+    const cart = await User_Cart.findOne({ user: userId });
+    if (cart) {
+      cart.products = [];
+      await cart.save();
+    }
+
+    // Update products' availability
     await Promise.all(
-      order.products.map(async (item) => {
+      order.items.map(async (item) => {
         try {
-          const product = await Product.findById(item.product._id);
-          product.availability = product.availability - item.quantity;
-          await product.save();
+          const product = await Product.findById(item.product);
+          if (product) {
+            product.availability = product.availability - item.quantity;
+            await product.save();
+          }
         } catch (err) {
-          internalServerError(res, err);
+          console.error("Failed to update availability:", err);
         }
       })
     );
 
-    await order
-      .save()
-      .then((savedOrder) => {
-        savedOrder
-          .populate([
-            { path: "buyer", select: "_id displayName email" },
-            {
-              path: "products.product",
-              select:
-                "_id displayName brand_title color price product_category displayImage availability",
-            },
-            {
-              path: "coupon_applied",
-              select: "_id code condition min_price discount_percent is_active",
-            },
-          ])
-          .then((result) =>
-            successRes(res, {
-              order: result,
-              orderId: razorpayOrderId,
-              paymentId: razorpayPaymentId,
-              updatedCart,
-              message: "Order placed successfully.",
-            })
-          );
-      })
-      .catch((err) => internalServerError(res, err));
+    await order.populate([
+      { path: "buyer", select: "_id displayName email" },
+      { path: "products.product" },
+      { path: "coupon_applied" },
+    ]);
+
+    return successRes(res, {
+      order,
+      orderId: razorpayOrderId,
+      paymentId: razorpayPaymentId,
+      message: "Order placed successfully.",
+    });
   } catch (error) {
     internalServerError(res, error);
   }
@@ -428,75 +427,43 @@ module.exports.rzpPaymentVerification = async (req, res) => {
 // ccavenue controllers
 module.exports.ccavenue_creatOrder_post = async (req, res) => {
   const { _id: userId } = req.user;
-  const { products, order_price, coupon_applied, shippingAddress } = req.body;
-  // make cart empty
+  const { products, coupon_applied, shippingAddress,
+          discountAmount, shippingAmount, taxAmount } = req.body;
 
-  if (!products || !order_price || !shippingAddress)
+  if (!products || !shippingAddress)
     return errorRes(res, 400, "All fields are required.");
-  if (products.length == 0) return errorRes(res, 400, "Cart is empty.");
+  if (products.length === 0) return errorRes(res, 400, "Cart is empty.");
 
   try {
-    await Promise.all(
-      products.map((item) => {
-        if (!item.quantity >= 1)
-          return errorRes(res, 400, "Remove products from with zero quantity.");
-        Product.findById(item.product).then((prod) => {
-          if (!prod)
-            return errorRes(
-              res,
-              400,
-              `Internal server error. Please refresh cart.`
-            );
-          if (!prod.availability >= 1)
-            return errorRes(
-              res,
-              400,
-              "Remove out of stock products from cart."
-            );
-          if (!prod.availability >= item.quantity)
-            return errorRes(
-              res,
-              400,
-              `Cannot place order for product ${prod.displayName} with quantity more than ${prod.availability}`
-            );
-        });
-      })
-    );
+    // Map frontend products to cartItems
+    const cartItems = products.map((item) => ({
+      productId: item.product,
+      quantity: item.quantity,
+      variantId: item.variant || null
+    }));
 
-    const order = new User_Order({
+    const order = await User_Order.createWithSnapshots({
+      cartItems,
       buyer: userId,
-      products,
-      order_price,
-      coupon_applied,
       shippingAddress,
       payment_mode: "ONLINE",
       payment_status: "PENDING",
+      coupon_applied,
+      discountAmount,
+      shippingAmount,
+      taxAmount,
     });
 
-    await order
-      .save()
-      .then((savedOrder) => {
-        savedOrder
-          .populate([
-            { path: "buyer", select: "_id displayName email" },
-            {
-              path: "products.product",
-              select:
-                "_id displayName brand_title color price product_category displayImage availability",
-            },
-            {
-              path: "coupon_applied",
-              select: "_id code condition min_price discount_percent is_active",
-            },
-          ])
-          .then((result) =>
-            successRes(res, {
-              order: result,
-              message: "Order placed successfully.",
-            })
-          );
-      })
-      .catch((err) => internalServerError(res, err));
+    await order.populate([
+      { path: "buyer", select: "_id displayName email" },
+      { path: "products.product" },
+      { path: "coupon_applied" },
+    ]);
+
+    return successRes(res, {
+      order,
+      message: "Order placed successfully.",
+    });
   } catch (error) {
     internalServerError(res, error);
   }

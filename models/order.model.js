@@ -269,6 +269,9 @@ const OrderSchema = new mongoose.Schema(
     // Tracking
     trackingNumber: String,
     trackingUrl: String,
+    // Delivery cost tracking
+    deliveryPartner: { type: String, trim: true },
+    shippingCostToPartner: { type: Number, default: 0 },
     // Notes
     customerNote: String,
     adminNote: String,
@@ -310,8 +313,8 @@ OrderSchema.pre("save", async function (next) {
     this.orderNumber = `${prefix}${String(count + 1).padStart(6, "0")}`;
   }
 
-  // Add status to history if changed
-  if (this.isModified("order_status")) {
+  // Add status to history if changed (skip if updateStatus() already handled it)
+  if (this.isModified("order_status") && !this._skipStatusHistoryPush) {
     this.statusHistory.push({
       status: this.order_status,
       timestamp: new Date()
@@ -398,9 +401,18 @@ OrderSchema.statics.createWithSnapshots = async function (orderData) {
   const taxAmount = orderData.taxAmount || 0;
   const grandTotal = subtotal - discountAmount + shippingAmount + taxAmount;
 
+  // Build legacy products array for backward compatibility
+  const products = items.map((item) => ({
+    product: item.product,
+    quantity: item.quantity,
+    price: item.price,
+    variant: item.variant || null
+  }));
+
   return this.create({
     ...orderData,
     items,
+    products,
     subtotal,
     discountAmount,
     shippingAmount,
@@ -434,9 +446,38 @@ OrderSchema.methods.getSummary = function () {
 };
 
 /**
+ * Valid status transitions — defines allowed next statuses for each current status.
+ * This is the single source of truth for the order state machine.
+ */
+const VALID_STATUS_TRANSITIONS = {
+  PLACED:                ["CONFIRMED", "CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN"],
+  CONFIRMED:             ["PROCESSING", "CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN"],
+  PROCESSING:            ["SHIPPED", "CANCELLED_BY_ADMIN"],
+  SHIPPED:               ["OUT_FOR_DELIVERY", "CANCELLED_BY_ADMIN"],
+  OUT_FOR_DELIVERY:      ["DELIVERED", "CANCELLED_BY_ADMIN"],
+  DELIVERED:             ["RETURNED"],
+  CANCELLED_BY_CUSTOMER: ["REFUNDED"],
+  CANCELLED_BY_ADMIN:    ["REFUNDED"],
+  RETURNED:              ["REFUNDED"],
+  REFUNDED:              [],  // terminal state
+};
+
+/**
  * Instance method: Update status with note
+ * Validates transition before applying.
  */
 OrderSchema.methods.updateStatus = async function (newStatus, note, updatedBy) {
+  const currentStatus = this.order_status;
+  const allowed = VALID_STATUS_TRANSITIONS[currentStatus] || [];
+
+  if (!allowed.includes(newStatus)) {
+    const err = new Error(
+      `Invalid status transition: ${currentStatus} → ${newStatus}. Allowed: ${allowed.join(", ") || "none (terminal state)"}`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
   this.order_status = newStatus;
   this.statusHistory.push({
     status: newStatus,
@@ -444,6 +485,9 @@ OrderSchema.methods.updateStatus = async function (newStatus, note, updatedBy) {
     note,
     updatedBy
   });
+
+  // Flag to prevent pre-save hook from duplicating the history entry
+  this._skipStatusHistoryPush = true;
 
   // Set timestamp for key events
   switch (newStatus) {
@@ -462,7 +506,9 @@ OrderSchema.methods.updateStatus = async function (newStatus, note, updatedBy) {
       break;
   }
 
-  return this.save();
+  const result = await this.save();
+  this._skipStatusHistoryPush = false;
+  return result;
 };
 
 mongoose.model("User_Order", OrderSchema);

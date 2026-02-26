@@ -135,6 +135,49 @@ const COUPON_SPECS = [
   }
 ];
 
+// ── Metal Rate Lookup (approximate market rates for seed data) ────────────────
+const METAL_RATES = {
+  GOLD_22K:   5500,   // ₹/gram
+  GOLD_24K:   6200,   // ₹/gram
+  SILVER_999: 75,     // ₹/gram
+  PLATINUM:   3200,   // ₹/gram
+};
+
+/** Build a realistic priceBreakdownSnapshot from product spec */
+const buildSnapshot = (productSpec, createdAt) => {
+  const price     = productSpec.staticPrice;
+  const metalType = productSpec.metalType;
+  const metalRate = METAL_RATES[metalType] || 5500;
+
+  // Derive realistic COGS: ~60% metal, ~10% gemstone, rest making/margin
+  const metalCost    = Math.round(price * 0.60);
+  const gemstoneCost = Math.round(price * 0.10);
+  const makingCharge = Math.round(price * 0.20);
+  const margin       = price - metalCost - gemstoneCost - makingCharge;
+
+  return {
+    components: [
+      { componentKey: "metalCost",    componentName: "Metal Cost",    value: metalCost,    isFrozen: false, isVisible: true },
+      { componentKey: "gemstoneCost", componentName: "Gemstone Cost", value: gemstoneCost, isFrozen: false, isVisible: true },
+      { componentKey: "makingCharge", componentName: "Making Charge", value: makingCharge, isFrozen: false, isVisible: true },
+      { componentKey: "margin",       componentName: "Margin",        value: margin,       isFrozen: false, isVisible: true },
+    ],
+    metalType,
+    metalRate,
+    metalCost,
+    gemstones: gemstoneCost > 0 ? [{
+      name: "Mixed Gemstones",
+      weight: parseFloat((gemstoneCost / 500).toFixed(2)),  // approx weight
+      pricePerCarat: 500,
+      totalCost: gemstoneCost,
+    }] : [],
+    gemstoneCost,
+    subtotal: price,
+    totalPrice: price,
+    snapshotAt: createdAt || new Date(),
+  };
+};
+
 // ── City / State / Pincode Lookup ──────────────────────────────────────────────
 const CITY_STATE = {
   Mumbai:    "Maharashtra",
@@ -512,12 +555,17 @@ const seedDummyOrders = async () => {
         _id:               newOid(),
         product:           productDoc._id,
         productTitle:      productSpec.productTitle,
+        productSlug:       productSpec.productSlug,
         skuNo:             productSpec.skuNo,
         quantity:          1,
         price,
         lineTotal:         price,
+        grossWeight:       5,
+        netWeight:         4,
         metalType:         productSpec.metalType,
-        pricingModeAtOrder:"STATIC_PRICE"
+        pricingModeAtOrder:"STATIC_PRICE",
+        priceBreakdownSnapshot: buildSnapshot(productSpec, createdAt),
+        variant:           null,
       }],
       products: [{
         product:  productDoc._id,
