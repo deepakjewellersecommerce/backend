@@ -1,8 +1,10 @@
 const ProductImage = require("../models/product_images");
 const { Product } = require("../models/product.model");
 const productVariation = require("../models/product_varient");
+const { PRICING_MODES } = require("../models/product_varient");
 const catchAsync = require("../utility/catch-async");
 const { errorRes } = require("../utility");
+const AppError = require("../utility/appError");
 
 // Helper to upload variant image files to Cloudinary
 async function uploadVariantImages(files) {
@@ -42,6 +44,11 @@ module.exports.addProductVariation = catchAsync(async (req, res, next) => {
     try { req.body.gemstones = JSON.parse(req.body.gemstones); } catch { req.body.gemstones = []; }
   }
 
+  // Parse pricingConfig from FormData (sent as JSON string)
+  if (req.body.pricingConfig && typeof req.body.pricingConfig === "string") {
+    try { req.body.pricingConfig = JSON.parse(req.body.pricingConfig); } catch { req.body.pricingConfig = undefined; }
+  }
+
   // Upload images to Cloudinary if files were sent
   const files = req.files || [];
   if (files.length > 0) {
@@ -50,6 +57,17 @@ module.exports.addProductVariation = catchAsync(async (req, res, next) => {
   }
 
   const variant = await productVariation.create(req.body);
+
+  // Calculate price for dynamic pricing variants
+  if (variant.pricingMode !== PRICING_MODES.STATIC_PRICE) {
+    try {
+      await variant.calculatePrice();
+    } catch (error) {
+      console.error("Error calculating variant price:", error.message);
+      // Continue without failing - price calculation can be retried
+    }
+  }
+
   res.status(201).json({
     status: "success",
     data: {
@@ -74,6 +92,11 @@ module.exports.updateProductVariation = catchAsync(async (req, res, next) => {
     try { req.body.gemstones = JSON.parse(req.body.gemstones); } catch { req.body.gemstones = []; }
   }
 
+  // Parse pricingConfig from FormData (sent as JSON string)
+  if (req.body.pricingConfig && typeof req.body.pricingConfig === "string") {
+    try { req.body.pricingConfig = JSON.parse(req.body.pricingConfig); } catch { delete req.body.pricingConfig; }
+  }
+
   // Upload new images to Cloudinary if files were sent
   const files = req.files || [];
   if (files.length > 0) {
@@ -89,8 +112,21 @@ module.exports.updateProductVariation = catchAsync(async (req, res, next) => {
     })
     .populate("color");
   if (!variant) {
-    return next(new AppError("No product found with that ID", 404));
+    return next(new AppError("No variant found with that ID", 404));
   }
+
+  // Recalculate price if pricing-relevant fields changed
+  const pricingFields = ["pricingMode", "pricingConfig", "staticPrice", "netWeight", "grossWeight", "gemstones"];
+  const shouldRecalculate = pricingFields.some(field => req.body[field] !== undefined);
+
+  if (shouldRecalculate && variant.pricingMode !== PRICING_MODES.STATIC_PRICE) {
+    try {
+      await variant.calculatePrice();
+    } catch (error) {
+      console.error("Error recalculating variant price:", error.message);
+    }
+  }
+
   res.status(200).json({
     status: "success",
     data: {
@@ -229,5 +265,152 @@ module.exports.getAllProductImages = catchAsync(async (req, res, next) => {
     data: {
       productImage,
     },
+  });
+});
+
+/**
+ * Preview variant price calculation
+ * Returns calculated price without saving
+ */
+module.exports.previewVariantPrice = catchAsync(async (req, res, next) => {
+  const { productId, netWeight, grossWeight, gemstones, pricingMode, pricingConfig } = req.body;
+
+  if (!productId) {
+    return res.status(400).json({
+      status: "fail",
+      message: "productId is required"
+    });
+  }
+
+  const Product = require("../models/product.model");
+  const { MetalPrice } = require("../models/metal-price.model");
+  const Subcategory = require("../models/subcategory.model");
+  const { calculateBreakdown, createPriceBreakdownData } = require("../utils/price-calculator");
+
+  const product = await Product.findById(productId).populate("subcategoryId");
+  if (!product) {
+    return res.status(404).json({
+      status: "fail",
+      message: "Product not found"
+    });
+  }
+
+  const metalType = product.metalType;
+
+  // If STATIC_PRICE mode, return the static price
+  if (pricingMode === PRICING_MODES.STATIC_PRICE) {
+    return res.status(200).json({
+      status: "success",
+      data: {
+        preview: {
+          calculatedPrice: req.body.staticPrice || 0,
+          priceBreakdown: {
+            metalType,
+            metalRate: 0,
+            metalCost: 0,
+            gemstoneCost: 0,
+            subtotal: req.body.staticPrice || 0,
+            totalPrice: req.body.staticPrice || 0
+          }
+        }
+      }
+    });
+  }
+
+  // Get current metal rate
+  const metalPrice = await MetalPrice.getCurrentPrice(metalType);
+  const metalRate = metalPrice.pricePerGram;
+
+  // Use variant-specific weight or fallback to product weight
+  const effectiveNetWeight = netWeight || product.netWeight;
+  const effectiveGrossWeight = grossWeight || product.grossWeight;
+
+  // Calculate gemstone cost
+  let gemstoneCost = 0;
+  if (gemstones && Array.isArray(gemstones)) {
+    gemstoneCost = gemstones.reduce((sum, g) => sum + ((g.weight || 0) * (g.pricePerCarat || 0)), 0);
+  }
+
+  // Determine pricing config
+  let effectivePricingConfig;
+  if (pricingMode === PRICING_MODES.CUSTOM_DYNAMIC && pricingConfig) {
+    effectivePricingConfig = pricingConfig;
+  } else if (product.pricingMode === "CUSTOM_DYNAMIC" && product.pricingConfig) {
+    effectivePricingConfig = product.pricingConfig;
+  } else {
+    const subcategory = await Subcategory.findById(product.subcategoryId);
+    if (!subcategory) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Product subcategory not found"
+      });
+    }
+    effectivePricingConfig = await subcategory.getPricingConfig();
+    if (!effectivePricingConfig) {
+      return res.status(400).json({
+        status: "fail",
+        message: "No pricing configuration found"
+      });
+    }
+  }
+
+  // Calculate breakdown
+  const context = { netWeight: effectiveNetWeight, metalRate };
+  const breakdown = effectivePricingConfig.calculateBreakdown
+    ? effectivePricingConfig.calculateBreakdown(context)
+    : calculateBreakdown(effectivePricingConfig, context);
+
+  const priceBreakdown = createPriceBreakdownData(breakdown, metalType, gemstoneCost);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      preview: {
+        calculatedPrice: priceBreakdown.totalPrice,
+        priceBreakdown,
+        effectiveWeight: {
+          netWeight: effectiveNetWeight,
+          grossWeight: effectiveGrossWeight
+        }
+      }
+    }
+  });
+});
+
+/**
+ * Customize variant pricing (switch to CUSTOM_DYNAMIC)
+ */
+module.exports.customizeVariantPricing = catchAsync(async (req, res, next) => {
+  const variant = await productVariation.findById(req.params.id);
+  if (!variant) {
+    return next(new AppError("No variant found with that ID", 404));
+  }
+
+  await variant.customizePricing();
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      variant
+    }
+  });
+});
+
+/**
+ * Reset variant pricing to inherited
+ */
+module.exports.resetVariantPricing = catchAsync(async (req, res, next) => {
+  const variant = await productVariation.findById(req.params.id);
+  if (!variant) {
+    return next(new AppError("No variant found with that ID", 404));
+  }
+
+  await variant.resetPricing();
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      variant
+    }
   });
 });

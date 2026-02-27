@@ -330,6 +330,7 @@ OrderSchema.pre("save", async function (next) {
  */
 OrderSchema.statics.createWithSnapshots = async function (orderData) {
   const { Product } = require("./product.model");
+  const ProductVariant = require("./product_varient");
 
   const items = [];
   let subtotal = 0;
@@ -338,6 +339,10 @@ OrderSchema.statics.createWithSnapshots = async function (orderData) {
     const product = await Product.findById(cartItem.productId).populate(
       "subcategoryId"
     );
+
+    const variant = cartItem.variantId
+      ? await ProductVariant.findById(cartItem.variantId)
+      : null;
 
     if (!product) {
       throw new Error(`Product not found: ${cartItem.productId}`);
@@ -364,13 +369,13 @@ OrderSchema.statics.createWithSnapshots = async function (orderData) {
       metalType: product.metalType,
       metalRate: product.priceBreakdown.metalRate,
       metalCost: product.priceBreakdown.metalCost,
-      gemstones: product.gemstones.map((g) => ({
+      gemstones: (variant?.gemstones || []).map((g) => ({
         name: g.customName || g.name,
         weight: g.weight,
         pricePerCarat: g.pricePerCarat,
         totalCost: g.totalCost
       })),
-      gemstoneCost: product.priceBreakdown.gemstoneCost,
+      gemstoneCost: variant?.priceBreakdown?.gemstoneCost ?? product.priceBreakdown.gemstoneCost,
       subtotal: product.priceBreakdown.subtotal,
       totalPrice: product.priceBreakdown.totalPrice,
       snapshotAt: new Date()

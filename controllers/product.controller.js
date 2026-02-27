@@ -38,15 +38,6 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
 
   if (!productData) return errorRes(res, 400, "Product details are required.");
 
-  // Parse gemstones if sent as string (from form-data)
-  if (productData.gemstones && typeof productData.gemstones === 'string') {
-    try {
-      productData.gemstones = JSON.parse(productData.gemstones);
-    } catch (e) {
-      productData.gemstones = [];
-    }
-  }
-
   // Handle SKU auto-generation if boxNumber is provided and skuNo is not provided
   if (productData.boxNumber && !productData.skuNo) {
     const subcategoryId = productData.subcategoryId;
@@ -317,7 +308,7 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
   // Only allow updating safe fields — never overwrite identity/hierarchy fields
   const allowedEditFields = [
     'productTitle', 'productSlug', 'productDescription', 'careHandling',
-    'grossWeight', 'netWeight', 'gemstones',
+    'grossWeight', 'netWeight',
     'pricingMode', 'staticPrice', 'salePrice',
     'isActive', 'isFeatured',
     'productImageUrl', 'seoTitle', 'seoDescription',
@@ -336,8 +327,7 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
     productData.staticPrice !== undefined ||
     productData.pricingMode !== undefined ||
     productData.grossWeight !== undefined ||
-    productData.netWeight !== undefined ||
-    productData.gemstones !== undefined;
+    productData.netWeight !== undefined;
 
   if (needsRecalculation) {
     await updatedProduct.calculatePrice();
