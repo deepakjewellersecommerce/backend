@@ -13,6 +13,7 @@ const Subcategory = require("../models/subcategory.model.js");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
 const { logAudit, AUDIT_ACTIONS, AUDIT_ENTITIES } = require("../models/audit-log.model");
+const metalPriceService = require("../services/metal-price.service");
 
 // ==================== METAL GROUPS (Base Metals) ====================
 
@@ -158,6 +159,53 @@ module.exports.updateMetalGroupPremium = catchAsync(async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating premium:", error);
+    internalServerError(res, error.message);
+  }
+});
+
+/**
+ * Fetch live MCX prices and update all metal groups
+ * POST /api/admin/categories/metal-groups/fetch-live-prices
+ */
+module.exports.fetchLiveMCXPrices = catchAsync(async (req, res) => {
+  try {
+    // Fetch and update MetalPrice records from external API
+    const fetchResult = await metalPriceService.fetchAndUpdateAll(
+      req.admin?.name || "Admin"
+    );
+
+    if (fetchResult.errors && fetchResult.errors.some((e) => e.general)) {
+      return internalServerError(res, fetchResult.errors[0].general);
+    }
+
+    // After update, read the saved prices and sync to MetalGroup records
+    // metals.dev mcx_gold → Gold group, mcx_silver → Silver group, platinum → Platinum group
+    const metalGroupMap = {
+      Gold: "GOLD_24K",
+      Silver: "SILVER_999",
+      Platinum: "PLATINUM",
+    };
+
+    const updated = [];
+    for (const [groupName, metalType] of Object.entries(metalGroupMap)) {
+      const priceRecord = await metalPriceService.getCurrentPrice(metalType);
+      if (!priceRecord) continue;
+
+      const group = await MetalGroup.findOne({ name: groupName });
+      if (!group) continue;
+
+      group.updateMCXPrice(priceRecord.pricePerGram);
+      await group.save();
+      await Material.recalculatePricesForMetalGroup(group._id);
+      updated.push({ name: groupName, mcxPrice: priceRecord.pricePerGram });
+    }
+
+    successRes(res, {
+      updated,
+      message: `Live prices fetched and ${updated.length} metal group(s) updated`,
+    });
+  } catch (error) {
+    console.error("Error fetching live MCX prices:", error);
     internalServerError(res, error.message);
   }
 });

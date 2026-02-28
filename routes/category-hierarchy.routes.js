@@ -38,6 +38,13 @@ router.get(
   categoryHierarchyController.getMetalGroup
 );
 
+// Fetch live MCX prices from API and update all metal groups
+router.post(
+  "/admin/categories/metal-groups/fetch-live-prices",
+  requireAdminLogin,
+  categoryHierarchyController.fetchLiveMCXPrices
+);
+
 // Update metal group (MCX price, premium, etc.)
 router.put(
   "/admin/categories/metal-groups/:id",

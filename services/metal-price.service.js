@@ -83,23 +83,24 @@ class MetalPriceService {
         timeout: 10000
       });
 
-      if (response.data && response.data.status === "success" && response.data.data && response.data.data.metals) {
-        const apiData = response.data.data.metals;
+      if (response.data && response.data.status === "success" && response.data.metals) {
+        const apiData = response.data.metals;
         let pricePerGram = null;
 
         // Map metals.dev response to our metal types
+        // metals.dev returns: mcx_gold, mcx_silver, platinum
         switch (metalType) {
           case METAL_TYPES.GOLD_24K:
-            pricePerGram = apiData.gold;
+            pricePerGram = apiData.mcx_gold;
             break;
           case METAL_TYPES.GOLD_22K:
-            pricePerGram = apiData.gold ? apiData.gold * (22 / 24) : null;
+            pricePerGram = apiData.mcx_gold ? apiData.mcx_gold * (22 / 24) : null;
             break;
           case METAL_TYPES.SILVER_999:
-            pricePerGram = apiData.silver;
+            pricePerGram = apiData.mcx_silver;
             break;
           case METAL_TYPES.SILVER_925:
-            pricePerGram = apiData.silver ? apiData.silver * 0.925 : null;
+            pricePerGram = apiData.mcx_silver ? apiData.mcx_silver * 0.925 : null;
             break;
           case METAL_TYPES.PLATINUM:
             pricePerGram = apiData.platinum;
@@ -234,24 +235,25 @@ class MetalPriceService {
         timeout: 10000
       });
 
-      if (response.data && response.data.status === "success" && response.data.data && response.data.data.metals) {
-        const apiData = response.data.data.metals;
+      if (response.data && response.data.status === "success" && response.data.metals) {
+        const apiData = response.data.metals;
 
         for (const metalType of Object.values(METAL_TYPES)) {
           let pricePerGram = null;
 
+          // metals.dev returns: mcx_gold, mcx_silver, platinum
           switch (metalType) {
             case METAL_TYPES.GOLD_24K:
-              pricePerGram = apiData.gold;
+              pricePerGram = apiData.mcx_gold;
               break;
             case METAL_TYPES.GOLD_22K:
-              pricePerGram = apiData.gold ? apiData.gold * (22 / 24) : null;
+              pricePerGram = apiData.mcx_gold ? apiData.mcx_gold * (22 / 24) : null;
               break;
             case METAL_TYPES.SILVER_999:
-              pricePerGram = apiData.silver;
+              pricePerGram = apiData.mcx_silver;
               break;
             case METAL_TYPES.SILVER_925:
-              pricePerGram = apiData.silver ? apiData.silver * 0.925 : null;
+              pricePerGram = apiData.mcx_silver ? apiData.mcx_silver * 0.925 : null;
               break;
             case METAL_TYPES.PLATINUM:
               pricePerGram = apiData.platinum;
