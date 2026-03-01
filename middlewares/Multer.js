@@ -1,16 +1,13 @@
 const multer=require('multer');
 
 module.exports=multer({
-    storage:multer.diskStorage({}),
+    storage:multer.memoryStorage(),
     fileFilter:(req,file,cb)=>{
-        // console.log(file);
-        if(!file.mimetype.match('image/jpeg|image/png|image/gif')){  //image/jpeg contains both jpeg and jpg
+        if(!file.mimetype.match('image/jpeg|image/png|image/gif')){
             cb(new Error('File is not supported'),false)
             return
         }
-// console.log(2)
         cb(null,true)
-        // console.log(3);
     }
 }) 
  

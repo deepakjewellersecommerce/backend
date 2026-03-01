@@ -116,6 +116,8 @@ const connectDB = async () => {
 // Initial connection attempt
 connectDB();
 
+const app = express();
+
 // Middleware to ensure DB connection for every request in serverless
 app.use(async (req, res, next) => {
   await connectDB();
@@ -123,30 +125,6 @@ app.use(async (req, res, next) => {
 });
 
 const database = mongoose.connection;
-database.on("error", (err) => console.error("Database error event:", err.message));
-database.once("connected", () => {
-  console.log("Database Connected successfully.");
-
-  // Initialize cache service
-  cacheService.init().then(() => {
-    console.log("Cache service initialized.");
-  }).catch((error) => {
-    console.warn("Cache service initialization failed:", error.message);
-  });
-
-  // Schedule MCX price fetch (runs daily at 9 AM IST)
-  scheduleMCXPriceFetch();
-
-  // Recover stale batch jobs from server crashes
-  const metalPriceService = require("./services/metal-price.service");
-  metalPriceService.recoverStaleJobs().catch((err) => {
-    console.error("Batch job recovery failed:", err.message);
-  });
-
-  console.log("Silver price will be managed manually by admin.");
-});
-
-const app = express();
 
 // Security middleware
 app.use(helmet({

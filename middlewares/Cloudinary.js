@@ -9,16 +9,24 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET, 
 });
 // Upload
-const uploadOnCloudinary = async (filePath) => {
-  try {
-    console.log("before cloud upload", filePath);
-    const data = await cloudinary.uploader.upload(filePath);
-    console.log(data, "<<<this is data in cloudinary ");
-    return data; // Return the full object, not just data.secure_url
-  } catch (error) {
-    console.log("Cloudinary upload error:", error.message);
-    throw error; // Re-throw to handle in calling function
-  }
+const uploadOnCloudinary = async (file) => {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.buffer) {
+      return reject(new Error("No file buffer provided"));
+    }
+
+    const stream = cloudinary.uploader.upload_stream(
+      { resource_type: "auto" },
+      (error, result) => {
+        if (error) {
+          console.error("Cloudinary upload error:", error);
+          return reject(error);
+        }
+        resolve(result);
+      }
+    );
+    stream.end(file.buffer);
+  });
 };
 const deleteFromCloudinary = async (url) =>{
   try {
@@ -40,18 +48,11 @@ const uploadPdf = async (file) => {
     console.log(error.message);
   }
 };
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, "./uploads");
-  },
-  filename: function (req, file, cb) {
-    cb(null, new Date().toISOString().replace(/:/g, "-") + file.originalname);
-  },
-});
+const storage = multer.memoryStorage();
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 1024 * 1024 * 1024,
+    fileSize: 10 * 1024 * 1024, // 10MB limit is safer for serverless
   },
 });
 
