@@ -171,12 +171,17 @@ const corsOptions = {
     "http://localhost:3000",
     "http://localhost:3001",
     "http://localhost:5173",
+    "https://dj-admin-eight.vercel.app",
     process.env.CLIENT_URL,
-  ],
+    process.env.ADMIN_URL,
+  ].filter(Boolean),
   credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
 };
 
 app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // Handle preflight for all routes
 
 app.use(auth_routes);
 app.use(productrating_routes);
