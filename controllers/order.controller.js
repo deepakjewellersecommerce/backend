@@ -319,6 +319,10 @@ module.exports.userOrderUpadte_put = catchAsync(async (req, res) => {
 
 // rzp
 module.exports.createRzpOrder_post = async (req, res) => {
+  if (!razorpayInstance) {
+    return internalServerError(res, { message: "Razorpay is not configured on this server." });
+  }
+
   const { amount, currency, receipt, notes } = req.body;
 
   razorpayInstance.orders.create(

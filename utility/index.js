@@ -51,13 +51,19 @@ module.exports.firstLetterCapitalInString = str => {
   return result;
 };
  
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+
+if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
   console.warn(
     "WARNING: RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET env vars are not set. Payment features will fail."
   );
 }
 
-module.exports.razorpayInstance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || "",
-  key_secret: process.env.RAZORPAY_KEY_SECRET || "",
-});
+// Industry Standard: Guarded initialization to prevent server crash if credentials missing
+module.exports.razorpayInstance = (RAZORPAY_KEY_ID && RAZORPAY_KEY_SECRET) 
+  ? new Razorpay({
+      key_id: RAZORPAY_KEY_ID,
+      key_secret: RAZORPAY_KEY_SECRET,
+    })
+  : null;
