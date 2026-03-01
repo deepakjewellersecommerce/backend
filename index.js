@@ -95,22 +95,31 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.set("strictQuery", true);
-mongoose.connect(MONGO_URI, {
-  serverSelectionTimeoutMS: 5000,
-  connectTimeoutMS: 10000,
-  family: 4, // Force IPv4 to avoid DNS resolution issues on some machines
-}).then(() => {
-  // Connection success logic is already in database.once("connected")
-}).catch(err => {
-  console.error("Mongoose initial connection failed:", err.message);
-  if (err.code === 'ETIMEOUT' && err.syscall === 'querySrv') {
-    console.warn("\n[DNS ISSUE DETECTED]");
-    console.warn("The MongoDB SRV lookup timed out. This is often a local DNS issue.");
-    console.warn("Try one of these fixes:");
-    console.warn("1. Change your DNS to 8.8.8.8 (Google) or 1.1.1.1 (Cloudflare).");
-    console.warn("2. Use the standard (non-SRV) connection string from MongoDB Atlas.");
-    console.warn("3. Check if your current network blocks access to Atlas clusters.\n");
+
+// Standard Mongoose connection strategy for serverless (Vercel)
+const connectDB = async () => {
+  if (mongoose.connection.readyState === 1) return;
+  
+  try {
+    await mongoose.connect(MONGO_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 10000,
+      bufferCommands: false, // Turn off buffering to fail fast if connection drops
+      family: 4, 
+    });
+    console.log("Database Connected successfully.");
+  } catch (err) {
+    console.error("Mongoose connection failed:", err.message);
   }
+};
+
+// Initial connection attempt
+connectDB();
+
+// Middleware to ensure DB connection for every request in serverless
+app.use(async (req, res, next) => {
+  await connectDB();
+  next();
 });
 
 const database = mongoose.connection;
