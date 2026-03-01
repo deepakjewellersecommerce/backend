@@ -1,8 +1,12 @@
 require("dotenv").config();
-// Start daily silver price cron job
-require("./utility/silver-price-cron");
-// MCX price fetch job
-const { scheduleMCXPriceFetch } = require("./jobs/fetch-mcx-prices");
+if (process.env.NODE_ENV !== "production") {
+  // Start daily silver price cron job locally only
+  require("./utility/silver-price-cron");
+  
+  // MCX price fetch job - only schedule locally
+  const { scheduleMCXPriceFetch } = require("./jobs/fetch-mcx-prices");
+  scheduleMCXPriceFetch();
+}
 const express = require("express");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
