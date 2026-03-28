@@ -1,5 +1,6 @@
 const UserLoyalty = require("../models/user-loyalty.model");
 const LoyaltyProgram = require("../models/loyalty-program.model");
+const User = require("../models/user.model");
 const { successRes, errorRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
 
@@ -201,19 +202,64 @@ module.exports.updateLoyaltyProgram = catchAsync(async (req, res) => {
 // Admin: Get all users' loyalty stats
 module.exports.getAllUsersLoyalty = catchAsync(async (req, res) => {
   try {
-    const { page = 1, limit = 50, sortBy = "totalPoints", sortOrder = "desc" } = req.query;
+    const {
+      page = 1,
+      limit = 50,
+      sortBy = "totalPoints",
+      sortOrder = "desc",
+      search = "",
+      tier = "",
+      minPoints,
+      maxPoints,
+      hasRedeemed,
+    } = req.query;
     const skip = (page - 1) * limit;
+    const filter = {};
     
     const sort = {};
     sort[sortBy] = sortOrder === "desc" ? -1 : 1;
 
-    const loyaltyData = await UserLoyalty.find()
+    if (tier) {
+      filter["currentTier.name"] = new RegExp(`^${tier}$`, "i");
+    }
+
+    if (minPoints !== undefined || maxPoints !== undefined) {
+      filter.totalPoints = {};
+      if (minPoints !== undefined && minPoints !== "") {
+        filter.totalPoints.$gte = Number(minPoints);
+      }
+      if (maxPoints !== undefined && maxPoints !== "") {
+        filter.totalPoints.$lte = Number(maxPoints);
+      }
+    }
+
+    if (hasRedeemed === "yes") {
+      filter["statistics.totalRedeemed"] = { $gt: 0 };
+    }
+
+    if (hasRedeemed === "no") {
+      filter["statistics.totalRedeemed"] = { $lte: 0 };
+    }
+
+    if (search) {
+      const matchingUserIds = await User.find({
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } },
+          { phoneNumber: { $regex: search, $options: "i" } },
+        ],
+      }).distinct("_id");
+
+      filter.user = { $in: matchingUserIds };
+    }
+
+    const loyaltyData = await UserLoyalty.find(filter)
       .populate("user", "name email phoneNumber")
       .sort(sort)
       .limit(parseInt(limit))
       .skip(skip);
 
-    const total = await UserLoyalty.countDocuments();
+    const total = await UserLoyalty.countDocuments(filter);
 
     // Calculate overall stats
     const overallStats = await UserLoyalty.aggregate([

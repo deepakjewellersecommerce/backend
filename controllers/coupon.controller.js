@@ -100,10 +100,19 @@ module.exports.getAllCoupons_get = catchAsync(async (req, res) => {
     isActive, 
     couponType, 
     expired,
-    search 
+    search,
+    status,
+    availability,
+    startDate,
+    endDate,
   } = req.query;
   
   const filter = {};
+  const now = new Date();
+  const normalizedStatus = String(status || "").toUpperCase();
+  const normalizedAvailability = String(availability || "").toLowerCase();
+  const exprConditions = [];
+  const expiryDateFilter = {};
   
   // Build filter object
   if (isActive !== undefined) filter.isActive = isActive === 'true';
@@ -111,15 +120,63 @@ module.exports.getAllCoupons_get = catchAsync(async (req, res) => {
   if (search) {
     filter.couponCode = { $regex: search, $options: 'i' };
   }
+
+  if (normalizedStatus === "ACTIVE") {
+    filter.isActive = true;
+    expiryDateFilter.$gte = now;
+    exprConditions.push({ $lt: ["$usedQuantity", "$couponQuantity"] });
+  }
+
+  if (normalizedStatus === "EXPIRED") {
+    expiryDateFilter.$lt = now;
+  }
+
+  if (normalizedStatus === "EXHAUSTED") {
+    exprConditions.push({ $gte: ["$usedQuantity", "$couponQuantity"] });
+  }
   
   // Handle expired filter
   if (expired !== undefined) {
-    const now = new Date();
     if (expired === 'true') {
-      filter.expiryDate = { $lt: now };
+      expiryDateFilter.$lt = now;
     } else {
-      filter.expiryDate = { $gte: now };
+      expiryDateFilter.$gte = now;
     }
+  }
+
+  if (startDate) {
+    const parsedStartDate = new Date(startDate);
+    if (!Number.isNaN(parsedStartDate.getTime())) {
+      expiryDateFilter.$gte = parsedStartDate;
+    }
+  }
+
+  if (endDate) {
+    const parsedEndDate = new Date(endDate);
+    if (!Number.isNaN(parsedEndDate.getTime())) {
+      parsedEndDate.setHours(23, 59, 59, 999);
+      expiryDateFilter.$lte = parsedEndDate;
+    }
+  }
+
+  if (normalizedAvailability === "in_stock") {
+    exprConditions.push({ $lt: ["$usedQuantity", "$couponQuantity"] });
+  }
+
+  if (normalizedAvailability === "out_of_stock") {
+    exprConditions.push({ $gte: ["$usedQuantity", "$couponQuantity"] });
+  }
+
+  if (Object.keys(expiryDateFilter).length > 0) {
+    filter.expiryDate = expiryDateFilter;
+  }
+
+  if (exprConditions.length === 1) {
+    filter.$expr = exprConditions[0];
+  }
+
+  if (exprConditions.length > 1) {
+    filter.$expr = { $and: exprConditions };
   }
 
   const skip = (parseInt(page) - 1) * parseInt(limit);

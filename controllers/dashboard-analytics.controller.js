@@ -576,7 +576,8 @@ module.exports.topLocations_get = catchAsync(async (req, res) => {
           state: { $ifNull: ["$shippingAddress.state", "Unknown"] }
         },
         revenue: { $sum: "$grandTotal" },
-        orderCount: { $sum: 1 }
+        orderCount: { $sum: 1 },
+        customers: { $addToSet: "$buyer" }
       }
     },
     { $sort: { revenue: -1 } },
@@ -587,7 +588,8 @@ module.exports.topLocations_get = catchAsync(async (req, res) => {
         city: "$_id.city",
         state: "$_id.state",
         revenue: 1,
-        orderCount: 1
+        orderCount: 1,
+        customers: { $size: "$customers" }
       }
     }
   ]);
@@ -681,7 +683,16 @@ module.exports.repeatPurchaseRate_get = catchAsync(async (req, res) => {
  * Stock Turnover by Category
  */
 module.exports.stockTurnover_get = catchAsync(async (req, res) => {
-  const data = await Inventory.aggregate([
+  const { materialId, genderId, itemId, categoryId } = req.query;
+
+  // Build product-level match filter from hierarchy params
+  const productMatch = {};
+  if (materialId) productMatch["productDetails.materialId"] = new mongoose.Types.ObjectId(materialId);
+  if (genderId) productMatch["productDetails.genderId"] = new mongoose.Types.ObjectId(genderId);
+  if (itemId) productMatch["productDetails.itemId"] = new mongoose.Types.ObjectId(itemId);
+  if (categoryId) productMatch["productDetails.categoryId"] = new mongoose.Types.ObjectId(categoryId);
+
+  const pipeline = [
     {
       $lookup: {
         from: "products",
@@ -691,6 +702,14 @@ module.exports.stockTurnover_get = catchAsync(async (req, res) => {
       }
     },
     { $unwind: { path: "$productDetails", preserveNullAndEmptyArrays: true } },
+  ];
+
+  // Apply hierarchy filter if any params provided
+  if (Object.keys(productMatch).length > 0) {
+    pipeline.push({ $match: productMatch });
+  }
+
+  pipeline.push(
     {
       $lookup: {
         from: "items",
@@ -718,8 +737,9 @@ module.exports.stockTurnover_get = catchAsync(async (req, res) => {
       }
     },
     { $sort: { totalSold: -1 } }
-  ]);
+  );
 
+  const data = await Inventory.aggregate(pipeline);
   successRes(res, { data });
 });
 
