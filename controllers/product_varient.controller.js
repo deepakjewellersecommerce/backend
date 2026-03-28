@@ -148,11 +148,20 @@ module.exports.deleteProductVariation = catchAsync(async (req, res, next) => {
 
 module.exports.getAllProductVariation = catchAsync(async (req, res, next) => {
   const { id } = req.params;
+  const stockStatus = String(req.query.stockStatus || "").toLowerCase();
   const isAdmin = !!req.admin;
   const filter = isAdmin ? {} : { isActive: true };
   
   filter.productId = id;
-  console.log(filter);
+
+  if (stockStatus === "in_stock") {
+    filter.stock = { $gt: 0 };
+  }
+
+  if (stockStatus === "out_of_stock") {
+    filter.stock = { $lte: 0 };
+  }
+
   const variants = await productVariation.find(filter).populate("color");
   res.status(200).json({
     status: "success",

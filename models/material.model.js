@@ -29,8 +29,8 @@ const materialSchema = new mongoose.Schema(
 
     slug: {
       type: String,
-      required: [true, "Slug is required"],
       unique: true,
+      sparse: true,
       lowercase: true,
       trim: true
     },
@@ -188,7 +188,7 @@ materialSchema.index({ slug: 1 }, { unique: true });
 materialSchema.index({ idAttribute: 1 }, { unique: true });
 materialSchema.index({ metalGroup: 1, isActive: 1 });
 materialSchema.index({ isActive: 1, sortOrder: 1 });
-materialSchema.index({ metalType: 1 }); // Legacy index for migration
+materialSchema.index({ metalType: 1 }, { sparse: true }); // Legacy index for migration
 
 // PRE-SAVE HOOKS
 

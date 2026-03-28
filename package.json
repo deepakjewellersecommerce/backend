@@ -6,7 +6,9 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node local-server.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "backfill:blog-banner-status": "node scripts/backfill-blog-banner-status.js",
+    "backfill:blog-banner-status:execute": "node scripts/backfill-blog-banner-status.js --execute"
   },
   "author": "piyush_r",
   "license": "ISC",

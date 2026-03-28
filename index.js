@@ -87,6 +87,7 @@ const product_pricing_routes = require("./routes/product-pricing.routes");
 const dashboard_analytics_routes = require("./routes/dashboard-analytics.routes");
 const rfid_tag_routes = require("./routes/rfid-tag.routes");
 const audit_log_routes = require("./routes/audit-log.routes");
+const pan_routes = require("./routes/pan.routes");
 
 const passport = require("./utility/passport");
 
@@ -101,17 +102,20 @@ const MONGO_URI = process.env.MONGO_URI;
 mongoose.set("strictQuery", true);
 
 // Standard Mongoose connection strategy for serverless (Vercel)
+const syncIndexes = require("./utility/sync-indexes");
+
 const connectDB = async () => {
   if (mongoose.connection.readyState === 1) return;
-  
+
   try {
     await mongoose.connect(MONGO_URI, {
       serverSelectionTimeoutMS: 5000,
       connectTimeoutMS: 10000,
       bufferCommands: false, // Turn off buffering to fail fast if connection drops
-      family: 4, 
+      family: 4,
     });
     console.log("Database Connected successfully.");
+    syncIndexes().catch((e) => console.warn("[sync-indexes] Error:", e.message));
   } catch (err) {
     console.error("Mongoose connection failed:", err.message);
   }
@@ -212,6 +216,7 @@ app.use(product_pricing_routes);
 app.use(dashboard_analytics_routes);
 app.use(rfid_tag_routes);
 app.use(audit_log_routes);
+app.use(pan_routes);
 
 // Use product sequence routes (for SKU generation)
 const product_sequence_routes = require("./routes/product-sequence.routes");
