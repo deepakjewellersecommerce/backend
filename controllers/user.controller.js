@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const User = mongoose.model("User");
 const User_Cart = mongoose.model("User_Cart");
+const User_Order = mongoose.model("User_Order");
 const {
   errorRes,
   internalServerError,
@@ -225,13 +226,233 @@ module.exports.downloadInvoice = catchAsync(async (req, res) => {
   }
 });
 
+// Admin: Get a specific user's full profile with order stats, loyalty, wishlist, coupons, category affinity
+module.exports.adminGetUserProfile = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    return errorRes(res, 400, "Invalid user ID.");
+  }
+
+  const user = await User.findById(userId).select("-password -__v");
+  if (!user) return errorRes(res, 404, "User not found.");
+
+  const User_Order = require("../models/order.model").User_Order;
+  const Wishlist = require("../models/wishlist.Model");
+  const userObjectId = mongoose.Types.ObjectId.isValid(userId)
+    ? new mongoose.Types.ObjectId(userId)
+    : user._id;
+
+  // ── Run all heavy queries in parallel ──
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+
+  const [
+    statsResult,
+    orders,
+    orderCount,
+    loyaltyInfo,
+    wishlistItems,
+    paymentBreakdown,
+    categoryAffinity,
+    returnRefundStats,
+    couponUsage,
+  ] = await Promise.all([
+    // 1. Core order stats
+    User_Order.aggregate([
+      { $match: { buyer: userObjectId } },
+      {
+        $group: {
+          _id: null,
+          totalOrders: { $sum: 1 },
+          totalSpent: { $sum: "$grandTotal" },
+          cancelledOrders: {
+            $sum: {
+              $cond: [
+                { $in: ["$order_status", ["CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN"]] },
+                1, 0,
+              ],
+            },
+          },
+          deliveredOrders: {
+            $sum: { $cond: [{ $eq: ["$order_status", "DELIVERED"] }, 1, 0] },
+          },
+          activeOrders: {
+            $sum: {
+              $cond: [
+                { $in: ["$order_status", ["PLACED", "CONFIRMED", "PROCESSING", "SHIPPED", "OUT_FOR_DELIVERY"]] },
+                1, 0,
+              ],
+            },
+          },
+          returnedOrders: {
+            $sum: { $cond: [{ $eq: ["$order_status", "RETURNED"] }, 1, 0] },
+          },
+          refundedOrders: {
+            $sum: { $cond: [{ $eq: ["$order_status", "REFUNDED"] }, 1, 0] },
+          },
+          avgOrderValue: { $avg: "$grandTotal" },
+          lastOrderDate: { $max: "$createdAt" },
+          firstOrderDate: { $min: "$createdAt" },
+        },
+      },
+    ]),
+
+    // 2. Paginated orders
+    User_Order.find({ buyer: userId })
+      .sort("-createdAt")
+      .skip(skip)
+      .limit(limit)
+      .populate("products.product", "productTitle productImageUrl")
+      .select("orderNumber order_status payment_status payment_mode grandTotal createdAt items products couponCode couponDiscount"),
+
+    // 3. Total order count
+    User_Order.countDocuments({ buyer: userId }),
+
+    // 4. Loyalty info
+    UserLoyalty.findOne({ user: userId }).lean(),
+
+    // 5. Wishlist with product details
+    Wishlist.find({ user: userId })
+      .populate("product", "productTitle productImageUrl salePrice calculatedPrice staticPrice")
+      .sort("-createdAt")
+      .limit(20)
+      .lean(),
+
+    // 6. Payment method breakdown (COD vs Online)
+    User_Order.aggregate([
+      { $match: { buyer: userObjectId } },
+      { $group: { _id: "$payment_mode", count: { $sum: 1 }, total: { $sum: "$grandTotal" } } },
+    ]),
+
+    // 7. Category affinity — top subcategories by spend using denormalized categoryHierarchyPath
+    User_Order.aggregate([
+      { $match: { buyer: userObjectId, order_status: { $nin: ["CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN", "REFUNDED"] } } },
+      { $unwind: { path: "$items", preserveNullAndEmptyArrays: false } },
+      // Try items.categoryHierarchyPath first; fall back to product lookup for older orders
+      { $lookup: { from: "products", localField: "items.product", foreignField: "_id", as: "prod" } },
+      { $unwind: { path: "$prod", preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: "subcategories", localField: "prod.subcategoryId", foreignField: "_id", as: "subcat" } },
+      { $unwind: { path: "$subcat", preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          // Prefer subcategory name from lookup; fall back to last segment of categoryHierarchyPath
+          resolvedCategory: {
+            $cond: {
+              if: { $gt: [{ $strLenCP: { $ifNull: ["$subcat.name", ""] } }, 0] },
+              then: "$subcat.name",
+              else: {
+                $cond: {
+                  if: { $gt: [{ $strLenCP: { $ifNull: ["$items.categoryHierarchyPath", ""] } }, 0] },
+                  then: {
+                    $let: {
+                      vars: { parts: { $split: ["$items.categoryHierarchyPath", " > "] } },
+                      in: { $arrayElemAt: ["$$parts", -1] },
+                    },
+                  },
+                  else: null,
+                },
+              },
+            },
+          },
+        },
+      },
+      { $match: { resolvedCategory: { $ne: null } } },
+      {
+        $group: {
+          _id: "$resolvedCategory",
+          orderCount: { $sum: 1 },
+          totalSpent: { $sum: { $ifNull: ["$items.lineTotal", 0] } },
+        },
+      },
+      { $sort: { totalSpent: -1 } },
+      { $limit: 5 },
+      { $project: { _id: 0, category: "$_id", orderCount: 1, totalSpent: 1 } },
+    ]),
+
+    // 8. Return/refund history (last 5 events)
+    User_Order.find({
+      buyer: userId,
+      order_status: { $in: ["RETURNED", "REFUNDED", "CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN"] },
+    })
+      .sort("-updatedAt")
+      .limit(5)
+      .select("orderNumber order_status grandTotal createdAt cancelledAt couponCode")
+      .lean(),
+
+    // 9. Coupon usage — distinct coupons used across all orders
+    User_Order.aggregate([
+      { $match: { buyer: userObjectId, couponCode: { $exists: true, $nin: [null, ""] } } },
+      {
+        $group: {
+          _id: "$couponCode",
+          timesUsed: { $sum: 1 },
+          totalDiscount: { $sum: { $ifNull: ["$couponDiscount", 0] } },
+          lastUsed: { $max: "$createdAt" },
+        },
+      },
+      { $sort: { lastUsed: -1 } },
+      { $project: { _id: 0, couponCode: "$_id", timesUsed: 1, totalDiscount: 1, lastUsed: 1 } },
+    ]),
+  ]);
+
+  const stats = statsResult[0] || {
+    totalOrders: 0, totalSpent: 0, cancelledOrders: 0, deliveredOrders: 0,
+    activeOrders: 0, returnedOrders: 0, refundedOrders: 0,
+    avgOrderValue: 0, lastOrderDate: null, firstOrderDate: null,
+  };
+
+  // Mask PAN number before sending to admin (show ABCXX678X shape)
+  const userObj = user.toObject();
+  if (userObj.pan?.number) {
+    const p = userObj.pan.number;
+    userObj.pan.number = p.length === 10
+      ? `${p.slice(0, 3)}XX${p.slice(5, 8)}X`
+      : p;
+  }
+
+  successRes(res, {
+    user: userObj,
+    orderStats: stats,
+    orders,
+    orderCount,
+    page,
+    limit,
+    loyalty: loyaltyInfo || null,
+    wishlist: wishlistItems,
+    paymentBreakdown,
+    categoryAffinity,
+    returnRefundHistory: returnRefundStats,
+    couponUsage,
+  });
+});
+
 module.exports.allusers_get = async (req, res) => {
   try {
     const search = req.query.search || "";
+    const accountStatus = String(req.query.accountStatus || "").toLowerCase();
+    const hasOrders = String(req.query.hasOrders || "").toLowerCase();
 
     const filter = {};
     if (search) {
-      filter.name = { $regex: search, $options: "i" };
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (accountStatus === "active") {
+      filter.isBlocked = false;
+    }
+
+    if (accountStatus === "blocked") {
+      filter.isBlocked = true;
+    }
+
+    if (hasOrders === "yes" || hasOrders === "no") {
+      const orderedUserIds = await User_Order.distinct("buyer");
+      filter._id = hasOrders === "yes" ? { $in: orderedUserIds } : { $nin: orderedUserIds };
     }
 
     const result = await buildPaginatedSortedFilteredQuery(

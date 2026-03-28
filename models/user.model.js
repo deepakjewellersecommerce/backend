@@ -64,6 +64,21 @@ const UserSchema = mongoose.Schema(
         default: null
       },
     coupon_applied: [],
+
+    // ── PAN Verification (required for orders above ₹2,00,000) ──
+    pan: {
+      number: {
+        type: String,
+        uppercase: true,
+        sparse: true,
+        index: true,
+      },
+      nameAsOnPan: { type: String },
+      verified: { type: Boolean, default: false },
+      verifiedAt: { type: Date },
+      // Response snapshot from verification provider for audit
+      verificationResponse: { type: mongoose.Schema.Types.Mixed },
+    },
   },
   { timestamps: true }
 );

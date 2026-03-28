@@ -10,6 +10,7 @@ const validate = require("../validation/validate");
 const { updateUserSchema } = require("../validation/user");
 
 router.get("/admin/user/all", requireAdminLogin, userController.allusers_get);
+router.get("/admin/user/:userId/profile", requireAdminLogin, userController.adminGetUserProfile);
 
 router.post(
   "/admin/user/:userId/block/:blockStatus",
