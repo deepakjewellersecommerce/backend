@@ -19,13 +19,43 @@ const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
 const { addProductUpdateNotification } = require("./notification.controller");
 require("dotenv").config();
 
+const HIGH_VALUE_THRESHOLD = 200000; // ₹2,00,000 — must match pan.controller.js
+
 module.exports.placeOrder_post = catchAsync(async (req, res) => {
   const { products, shippingAddress, payment_mode, payment_status,
-          coupon_applied, discountAmount, shippingAmount, taxAmount } = req.body;
+          coupon_applied, discountAmount, shippingAmount, taxAmount,
+          grandTotal } = req.body;
   const { _id: userId } = req.user;
 
   if (!products || products.length === 0)
     return errorRes(res, 400, "Cart is empty.");
+
+  // ── High-value order checks ───────────────────────────────────────────────
+  // grandTotal is sent by the frontend; we re-verify it below after snapshot.
+  // This pre-check gives the user an early, clear error before we do DB work.
+  const declaredTotal = Number(grandTotal) || 0;
+
+  if (declaredTotal > HIGH_VALUE_THRESHOLD) {
+    const buyer = await User.findById(userId).select("pan");
+
+    // Rule 1: PAN must be verified for any order above ₹2L
+    if (!buyer?.pan?.verified) {
+      return errorRes(res, 403, "PAN_VERIFICATION_REQUIRED");
+    }
+
+    // Rule 2: COD cannot exceed ₹2L — remainder must be paid online
+    if (payment_mode === "COD") {
+      return errorRes(res, 400, "COD_LIMIT_EXCEEDED");
+    }
+  }
+
+  // ── Payment lock: ONLINE orders must not be placed via this endpoint ─────
+  // ONLINE orders are created only after payment is verified through the
+  // dedicated payment-gateway routes (Razorpay / Stripe / CCAvenue).
+  // Hitting this endpoint with payment_mode=ONLINE would create an unpaid order.
+  if ((payment_mode || "COD") === "ONLINE") {
+    return errorRes(res, 400, "ONLINE orders must be placed through the payment gateway. Use the Razorpay or Stripe checkout flow.");
+  }
 
   // Map frontend products format to cartItems expected by createWithSnapshots
   const cartItems = products.map((item) => ({
@@ -38,8 +68,8 @@ module.exports.placeOrder_post = catchAsync(async (req, res) => {
     cartItems,
     buyer: userId,
     shippingAddress,
-    payment_mode: payment_mode || "COD",
-    payment_status: payment_status || "PENDING",
+    payment_mode: "COD",
+    payment_status: "PENDING",
     coupon_applied,
     discountAmount,
     shippingAmount,
@@ -53,17 +83,56 @@ module.exports.placeOrder_post = catchAsync(async (req, res) => {
 });
 
 module.exports.getAllOrders_get = catchAsync(async (req, res) => {
+  const { search, payment_status, order_status, startDate, endDate } = req.query;
+
+  const filter = {};
+
+  // ── Status filters (direct field match) ──
+  const VALID_PAYMENT_STATUSES = ["PENDING", "COMPLETE", "FAILED", "REFUNDED"];
+  const VALID_ORDER_STATUSES = [
+    "PLACED", "CONFIRMED", "PROCESSING", "SHIPPED", "OUT_FOR_DELIVERY",
+    "DELIVERED", "CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN", "RETURNED", "REFUNDED",
+  ];
+  if (payment_status && VALID_PAYMENT_STATUSES.includes(payment_status)) {
+    filter.payment_status = payment_status;
+  }
+  if (order_status && VALID_ORDER_STATUSES.includes(order_status)) {
+    filter.order_status = order_status;
+  }
+
+  // ── Date range on createdAt ──
+  if (startDate || endDate) {
+    filter.createdAt = {};
+    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (endDate) filter.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+  }
+
+  // ── Search: shippingAddress fields + buyer lookup ──
+  if (search && search.trim()) {
+    const s = search.trim();
+    // Look up users by name or phone (phoneNumber is Number, use $expr for phone)
+    const userMatches = await User.find({
+      $or: [
+        { name: { $regex: s, $options: "i" } },
+        { $expr: { $regexMatch: { input: { $toString: "$phoneNumber" }, regex: s, options: "i" } } },
+      ],
+    }).select("_id");
+    const buyerIds = userMatches.map((u) => u._id);
+
+    filter.$or = [
+      { "shippingAddress.name": { $regex: s, $options: "i" } },
+      { "shippingAddress.phone": { $regex: s, $options: "i" } },
+      ...(buyerIds.length ? [{ buyer: { $in: buyerIds } }] : []),
+    ];
+  }
+
   const orders = await buildPaginatedSortedFilteredQuery(
-    User_Order.find()
+    User_Order.find(filter)
       .sort("-createdAt")
       .populate([
         { path: "buyer" },
-        {
-          path: "products.product",
-        },
-        {
-          path: "products.variant",
-        },
+        { path: "products.product" },
+        { path: "products.variant" },
         {
           path: "coupon_applied",
           select: "_id code condition min_price discount_percent is_active",
@@ -137,6 +206,162 @@ module.exports.adminOrderDetails_get = catchAsync(async (req, res) => {
   if (!order) return errorRes(res, 404, "Order not found.");
 
   successRes(res, { data: order });
+});
+
+module.exports.adminDownloadInvoice = catchAsync(async (req, res) => {
+  const { orderId } = req.params;
+  const fs = require("fs");
+
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    return errorRes(res, 400, "Invalid Order ID.");
+  }
+
+  const order = await User_Order.findById(orderId).populate([
+    { path: "buyer", select: "name email phoneNumber" },
+    { path: "products.product", select: "productTitle skuNo" },
+    { path: "items.product", select: "productTitle skuNo" },
+  ]);
+
+  if (!order) return errorRes(res, 404, "Order not found.");
+
+  const InvoiceService = require("../services/invoice.service");
+  const { filePath, fileName } = await InvoiceService.generateInvoice(order, order.buyer);
+
+  res.download(filePath, fileName, (err) => {
+    if (err) console.error("Invoice download error:", err);
+    fs.unlink(filePath, () => {});
+  });
+});
+
+// ── GST Monthly Report ────────────────────────────────────────────────────────
+// GET /admin/order/gst-report?year=2025&month=3   (month is 1-based)
+// GET /admin/order/gst-report?year=2025            (full year, all months)
+module.exports.getGstReport = catchAsync(async (req, res) => {
+  const { year, month } = req.query;
+  if (!year) return errorRes(res, 400, "year is required");
+
+  const y = parseInt(year, 10);
+  let startDate, endDate;
+
+  if (month) {
+    const m = parseInt(month, 10); // 1-based
+    startDate = new Date(y, m - 1, 1);
+    endDate   = new Date(y, m, 1);
+  } else {
+    startDate = new Date(y, 0, 1);
+    endDate   = new Date(y + 1, 0, 1);
+  }
+
+  // Only completed/paid orders
+  const matchStage = {
+    $match: {
+      createdAt: { $gte: startDate, $lt: endDate },
+      payment_status: { $in: ["COMPLETE"] },
+      order_status: { $nin: ["CANCELLED", "REFUNDED", "RETURNED"] },
+    },
+  };
+
+  // Monthly breakdown aggregation
+  const monthlyPipeline = [
+    matchStage,
+    {
+      $group: {
+        _id: { month: { $month: "$createdAt" }, year: { $year: "$createdAt" } },
+        orderCount:    { $sum: 1 },
+        taxableValue:  { $sum: "$subtotal" },
+        totalTax:      { $sum: "$taxAmount" },
+        totalDiscount: { $sum: "$discountAmount" },
+        totalShipping: { $sum: "$shippingAmount" },
+        grandTotal:    { $sum: "$grandTotal" },
+        codOrders:     { $sum: { $cond: [{ $eq: ["$payment_mode", "COD"] }, 1, 0] } },
+        onlineOrders:  { $sum: { $cond: [{ $eq: ["$payment_mode", "ONLINE"] }, 1, 0] } },
+      },
+    },
+    { $sort: { "_id.year": 1, "_id.month": 1 } },
+  ];
+
+  // Order-level detail for CSV export
+  const detailPipeline = [
+    matchStage,
+    {
+      $lookup: {
+        from: "users",
+        localField: "buyer",
+        foreignField: "_id",
+        as: "buyerInfo",
+      },
+    },
+    { $unwind: { path: "$buyerInfo", preserveNullAndEmptyArrays: true } },
+    {
+      $project: {
+        orderNumber:    1,
+        createdAt:      1,
+        payment_mode:   1,
+        subtotal:       1,
+        taxAmount:      1,
+        discountAmount: 1,
+        shippingAmount: 1,
+        grandTotal:     1,
+        "shippingAddress.name": 1,
+        "shippingAddress.phone": 1,
+        "buyerInfo.email": 1,
+        "buyerInfo.pan.number": 1,
+        "buyerInfo.pan.verified": 1,
+      },
+    },
+    { $sort: { createdAt: 1 } },
+  ];
+
+  // Totals summary
+  const summaryPipeline = [
+    matchStage,
+    {
+      $group: {
+        _id: null,
+        orderCount:    { $sum: 1 },
+        taxableValue:  { $sum: "$subtotal" },
+        totalTax:      { $sum: "$taxAmount" },
+        totalDiscount: { $sum: "$discountAmount" },
+        totalShipping: { $sum: "$shippingAmount" },
+        grandTotal:    { $sum: "$grandTotal" },
+        highValueOrders: { $sum: { $cond: [{ $gte: ["$grandTotal", 200000] }, 1, 0] } },
+      },
+    },
+  ];
+
+  const [monthly, orders, summaryArr] = await Promise.all([
+    User_Order.aggregate(monthlyPipeline),
+    User_Order.aggregate(detailPipeline),
+    User_Order.aggregate(summaryPipeline),
+  ]);
+
+  const summary = summaryArr[0] || {
+    orderCount: 0, taxableValue: 0, totalTax: 0,
+    totalDiscount: 0, totalShipping: 0, grandTotal: 0, highValueOrders: 0,
+  };
+
+  // Mask PAN for display (show only last 4 chars)
+  const maskedOrders = orders.map((o) => {
+    const pan = o.buyerInfo?.pan?.number;
+    return {
+      ...o,
+      buyerInfo: o.buyerInfo
+        ? {
+            ...o.buyerInfo,
+            pan: pan
+              ? { number: pan.slice(0, 2) + "XXXXX" + pan.slice(7), verified: o.buyerInfo.pan.verified }
+              : null,
+          }
+        : null,
+    };
+  });
+
+  successRes(res, {
+    period: { year: y, month: month ? parseInt(month, 10) : null, startDate, endDate },
+    summary,
+    monthly,
+    orders: maskedOrders,
+  });
 });
 
 module.exports.getYearWiseorder = asynchandler(async (req, res) => {

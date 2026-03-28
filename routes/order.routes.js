@@ -36,6 +36,12 @@ router.get(
   requireAdminLogin,
   orderController.getYearWiseorder
 );
+
+router.get(
+  "/admin/order/gst-report",
+  requireAdminLogin,
+  orderController.getGstReport
+);
 router.get(
   "/user/order/all",
   requireUserLogin,
@@ -58,6 +64,12 @@ router.put(
   "/admin/order/:orderId/update",
   requireAdminLogin,
   orderController.updateOrder_post
+);
+
+router.get(
+  "/admin/order/:orderId/invoice",
+  requireAdminLogin,
+  orderController.adminDownloadInvoice
 );
 
 router.get(

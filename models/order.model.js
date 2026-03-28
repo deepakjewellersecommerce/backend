@@ -470,6 +470,9 @@ const VALID_STATUS_TRANSITIONS = {
 /**
  * Instance method: Update status with note
  * Validates transition before applying.
+ * Also enforces payment-status locks:
+ *   - ONLINE orders: cannot advance past PLACED until payment_status is COMPLETE
+ *   - COD orders: cannot be marked DELIVERED unless payment_status is COMPLETE
  */
 OrderSchema.methods.updateStatus = async function (newStatus, note, updatedBy) {
   const currentStatus = this.order_status;
@@ -478,6 +481,38 @@ OrderSchema.methods.updateStatus = async function (newStatus, note, updatedBy) {
   if (!allowed.includes(newStatus)) {
     const err = new Error(
       `Invalid status transition: ${currentStatus} → ${newStatus}. Allowed: ${allowed.join(", ") || "none (terminal state)"}`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // ── Payment lock: ONLINE orders ───────────────────────────────────────────
+  // Once placed, an ONLINE order must have a completed payment before it can
+  // advance to any downstream status (CONFIRMED, PROCESSING, SHIPPED, etc.).
+  // Cancellations are always allowed regardless of payment status.
+  const CANCELLATION_STATUSES = ["CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN", "REFUNDED"];
+  if (
+    this.payment_mode === "ONLINE" &&
+    this.payment_status !== "COMPLETE" &&
+    !CANCELLATION_STATUSES.includes(newStatus)
+  ) {
+    const err = new Error(
+      `Cannot advance order to "${newStatus}": payment has not been completed. Complete the payment first.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // ── Payment lock: COD orders ──────────────────────────────────────────────
+  // A COD order can only be marked DELIVERED once the cash has been collected
+  // (i.e. payment_status must be COMPLETE at the time of this transition).
+  if (
+    this.payment_mode === "COD" &&
+    newStatus === "DELIVERED" &&
+    this.payment_status !== "COMPLETE"
+  ) {
+    const err = new Error(
+      `Cannot mark COD order as DELIVERED: payment has not been collected. Update payment status to COMPLETE first.`
     );
     err.statusCode = 400;
     throw err;
