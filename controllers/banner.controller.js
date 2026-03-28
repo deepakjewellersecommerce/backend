@@ -4,8 +4,17 @@ const { errorRes, successRes, internalServerError } = require("../utility");
 const catchAsync = require("../utility/catch-async");
 const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
 
+const normalizeBoolean = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.toLowerCase() === "true") return true;
+    if (value.toLowerCase() === "false") return false;
+  }
+  return undefined;
+};
+
 module.exports.addBanner_post = catchAsync(async (req, res) => {
-  let { bannerImages, title, content } = req.body;
+  let { bannerImages, title, content, isActive } = req.body;
 
   // If files are uploaded, handle them via Cloudinary
   if (req.files && req.files.length > 0) {
@@ -44,6 +53,7 @@ module.exports.addBanner_post = catchAsync(async (req, res) => {
     bannerImages,
     title,
     content,
+    isActive: normalizeBoolean(isActive),
   });
 
   successRes(res, { banner, message: "Banner added successfully." });
@@ -56,7 +66,7 @@ module.exports.editBanner = catchAsync(async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return errorRes(res, 400, "Invalid banner id");
   }
-  let { bannerImages, title, content } = req.body;
+  let { bannerImages, title, content, isActive } = req.body;
 
   // If files are uploaded, handle them via Cloudinary
   if (req.files && req.files.length > 0) {
@@ -83,13 +93,20 @@ module.exports.editBanner = catchAsync(async (req, res) => {
     }
   }
 
+  const updateData = {
+    bannerImages,
+    title,
+    content,
+  };
+
+  const normalizedIsActive = normalizeBoolean(isActive);
+  if (normalizedIsActive !== undefined) {
+    updateData.isActive = normalizedIsActive;
+  }
+
   const banner = await Banner.findByIdAndUpdate(
     id,
-    {
-      bannerImages,
-      title,
-      content,
-    },
+    updateData,
     { new: true }
   );
 
@@ -98,12 +115,49 @@ module.exports.editBanner = catchAsync(async (req, res) => {
   successRes(res, { banner, message: "Banner updated successfully." });
 });
 
-module.exports.getAllBanners_get = (req, res) => {
-  Banner.find()
-    .sort("-createdAt")
-    .then((banners) => successRes(res, { banners }))
-    .catch((err) => internalServerError(res, err));
-};
+module.exports.getAllBanners_get = catchAsync(async (req, res) => {
+  const {
+    page = 1,
+    limit = 10,
+    search = "",
+    isActive,
+  } = req.query;
+  const parsedPage = parseInt(page, 10);
+  const parsedLimit = parseInt(limit, 10);
+  const filter = {};
+
+  if (search) {
+    filter.$or = [
+      { title: { $regex: search, $options: "i" } },
+      { content: { $regex: search, $options: "i" } },
+      { slug: { $regex: search, $options: "i" } },
+    ];
+  }
+
+  const normalizedIsActive = normalizeBoolean(isActive);
+  if (normalizedIsActive === false) {
+    filter.isActive = normalizedIsActive;
+  }
+
+  if (normalizedIsActive === true) {
+    const activeCondition = { $or: [{ isActive: true }, { isActive: { $exists: false } }] };
+
+    if (filter.$or) {
+      filter.$and = [{ $or: filter.$or }, activeCondition];
+      delete filter.$or;
+    } else {
+      filter.$or = activeCondition.$or;
+    }
+  }
+
+  const skip = (parsedPage - 1) * parsedLimit;
+  const [banners, total] = await Promise.all([
+    Banner.find(filter).sort("-createdAt").skip(skip).limit(parsedLimit),
+    Banner.countDocuments(filter),
+  ]);
+
+  successRes(res, { banners, total, limit: parsedLimit, page: parsedPage });
+});
 
 module.exports.deleteBanner = catchAsync(async (req, res) => {
   const { id } = req.params;

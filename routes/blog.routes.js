@@ -5,8 +5,9 @@ const router = express.Router();
 
 router.post("/admin/blog/add", requireAdminLogin, blogController.addBlog_post);
 router.get("/blog/all", blogController.getAllBlogs_get);
-router.delete("/admin/blog/:_id/delete", blogController.deleteBlog);
-router.post("/admin/blog/:_id/edit", blogController.editBlog);
+router.delete("/admin/blog/:_id/delete", requireAdminLogin, blogController.deleteBlog);
+router.post("/admin/blog/:_id/edit", requireAdminLogin, blogController.editBlog);
+router.put("/admin/blog/:_id/edit", requireAdminLogin, blogController.editBlog);
 router.get("/blog/:id", blogController.getBlogById);
 
 module.exports = router;
