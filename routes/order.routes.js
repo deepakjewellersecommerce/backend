@@ -32,6 +32,12 @@ router.get(
 );
 
 router.get(
+  "/admin/order/export",
+  requireAdminLogin,
+  orderController.exportOrders_get
+);
+
+router.get(
   "/admin/order/yearwise",
   requireAdminLogin,
   orderController.getYearWiseorder

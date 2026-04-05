@@ -102,10 +102,12 @@ module.exports.getAllOrders_get = catchAsync(async (req, res) => {
   }
 
   // ── Date range on createdAt (IST aware) ──
-  if (startDate || endDate) {
+  const start = startDate ? startOfDayIST(startDate) : null;
+  const end = endDate ? endOfDayIST(endDate) : null;
+  if (start || end) {
     filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = startOfDayIST(startDate);
-    if (endDate) filter.createdAt.$lte = endOfDayIST(endDate);
+    if (start) filter.createdAt.$gte = start;
+    if (end) filter.createdAt.$lte = end;
   }
 
   // ── Search: shippingAddress fields + buyer lookup ──
@@ -188,6 +190,22 @@ module.exports.getAllOrders_get = catchAsync(async (req, res) => {
     },
   ]);
 
+  if (!aggregation || !aggregation.length) {
+    return successRes(res, {
+      data: [],
+      page,
+      limit,
+      total: 0,
+      summary: {
+        totalOrders: 0,
+        completedOrders: 0,
+        avgOrderValue: 0,
+        repeatRate: 0,
+        totalRevenue: 0,
+      },
+    });
+  }
+
   const result = aggregation[0];
   const total = result.metadata[0]?.total || 0;
   const metrics = result.metrics[0] || {
@@ -198,30 +216,104 @@ module.exports.getAllOrders_get = catchAsync(async (req, res) => {
   };
 
   // Calculate Average Order Value
-  const avgOrderValue = total > 0 ? metrics.totalRevenue / total : 0;
+  const avgOrderValue = total > 0 ? (metrics.totalRevenue || 0) / total : 0;
 
   // Calculate Repeat Rate (simplified for dashboard)
+  const validBuyerIds = (metrics.buyerIds || []).filter(Boolean);
   const uniqueBuyers = new Set(
-    metrics.buyerIds.map((id) => id?.toString())
+    validBuyerIds.map((id) => id?.toString())
   ).size;
   const repeatRate =
     total > 0 ? ((total - uniqueBuyers) / total) * 100 : 0;
 
   const response = {
-    data: result.data,
+    data: result.data || [],
     page,
     limit,
     total,
     summary: {
-      totalOrders: metrics.totalOrders,
-      completedOrders: metrics.completedOrders,
+      totalOrders: metrics.totalOrders || 0,
+      completedOrders: metrics.completedOrders || 0,
       avgOrderValue: Math.round(avgOrderValue * 100) / 100,
       repeatRate: Math.round(repeatRate * 10) / 10,
-      totalRevenue: metrics.totalRevenue,
+      totalRevenue: metrics.totalRevenue || 0,
     },
   };
 
   successRes(res, response);
+});
+
+module.exports.exportOrders_get = catchAsync(async (req, res) => {
+  const { search, payment_status, order_status, startDate, endDate } = req.query;
+
+  const filter = {};
+
+  // Apply filters identically to getAllOrders_get
+  const VALID_PAYMENT_STATUSES = ["PENDING", "COMPLETE", "FAILED", "REFUNDED"];
+  const VALID_ORDER_STATUSES = [
+    "PLACED", "CONFIRMED", "PROCESSING", "SHIPPED", "OUT_FOR_DELIVERY",
+    "DELIVERED", "CANCELLED_BY_CUSTOMER", "CANCELLED_BY_ADMIN", "RETURNED", "REFUNDED",
+  ];
+  if (payment_status && VALID_PAYMENT_STATUSES.includes(payment_status)) {
+    filter.payment_status = payment_status;
+  }
+  if (order_status && VALID_ORDER_STATUSES.includes(order_status)) {
+    filter.order_status = order_status;
+  }
+
+  const start = startDate ? startOfDayIST(startDate) : null;
+  const end = endDate ? endOfDayIST(endDate) : null;
+  if (start || end) {
+    filter.createdAt = {};
+    if (start) filter.createdAt.$gte = start;
+    if (end) filter.createdAt.$lte = end;
+  }
+
+  if (search && search.trim()) {
+    const s = search.trim();
+    // Look up users by name or phone (phoneNumber is Number, use $expr for phone)
+    const userMatches = await User.find({
+      $or: [
+        { name: { $regex: s, $options: "i" } },
+        { $expr: { $regexMatch: { input: { $toString: "$phoneNumber" }, regex: s, options: "i" } } },
+      ],
+    }).select("_id");
+    const buyerIds = userMatches.map((u) => u._id);
+
+    filter.$or = [
+      { orderNumber: { $regex: s, $options: "i" } },
+      { "shippingAddress.name": { $regex: s, $options: "i" } },
+      { "shippingAddress.phone": { $regex: s, $options: "i" } },
+      ...(buyerIds.length ? [{ buyer: { $in: buyerIds } }] : []),
+    ];
+  }
+
+  // Get all matching orders unpaginated
+  const orders = await User_Order.find(filter)
+    .sort("-createdAt")
+    .populate([
+      { path: "buyer", select: "name email phoneNumber" },
+      { path: "coupon_applied", select: "code" },
+    ]);
+
+  // Transform data for CSV
+  const csvData = orders.map((order) => ({
+    "Order ID": order.orderNumber || "N/A",
+    "Order Date": order.createdAt ? new Date(order.createdAt).toLocaleDateString("en-IN") : "N/A",
+    "Customer Name": order.shippingAddress?.name || order.buyer?.name || "N/A",
+    "Customer Phone": order.shippingAddress?.phone || order.buyer?.phoneNumber || "N/A",
+    "Total Amount": order.grandTotal || 0,
+    "Status": order.order_status || "N/A",
+    "Payment Status": order.payment_status || "N/A",
+    "Payment Mode": order.payment_mode || "N/A",
+    "Items Count": order.items?.length || order.products?.length || 0,
+    "Delivery Address": order.shippingAddress?.address || "N/A",
+  }));
+
+  return successRes(res, {
+    data: csvData,
+    total: csvData.length
+  });
 });
 
 module.exports.userOrderDetails_get = catchAsync(async (req, res) => {
