@@ -14,7 +14,7 @@ const normalizeBoolean = (value) => {
 };
 
 module.exports.addBanner_post = catchAsync(async (req, res) => {
-  let { bannerImages, title, content, isActive } = req.body;
+  let { bannerImages, title, content, isActive, product } = req.body;
 
   // If files are uploaded, handle them via Cloudinary
   if (req.files && req.files.length > 0) {
@@ -54,6 +54,7 @@ module.exports.addBanner_post = catchAsync(async (req, res) => {
     title,
     content,
     isActive: normalizeBoolean(isActive),
+    product: product || null,
   });
 
   successRes(res, { banner, message: "Banner added successfully." });
@@ -66,7 +67,7 @@ module.exports.editBanner = catchAsync(async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return errorRes(res, 400, "Invalid banner id");
   }
-  let { bannerImages, title, content, isActive } = req.body;
+  let { bannerImages, title, content, isActive, product } = req.body;
 
   // If files are uploaded, handle them via Cloudinary
   if (req.files && req.files.length > 0) {
@@ -97,6 +98,7 @@ module.exports.editBanner = catchAsync(async (req, res) => {
     bannerImages,
     title,
     content,
+    product: product || null,
   };
 
   const normalizedIsActive = normalizeBoolean(isActive);
@@ -152,7 +154,7 @@ module.exports.getAllBanners_get = catchAsync(async (req, res) => {
 
   const skip = (parsedPage - 1) * parsedLimit;
   const [banners, total] = await Promise.all([
-    Banner.find(filter).sort("-createdAt").skip(skip).limit(parsedLimit),
+    Banner.find(filter).populate("product", "_id title slug").sort("-createdAt").skip(skip).limit(parsedLimit),
     Banner.countDocuments(filter),
   ]);
 
@@ -178,7 +180,7 @@ module.exports.getBannerById = catchAsync(async (req, res) => {
     return errorRes(res, 400, "Invalid banner id");
   }
 
-  const banner = await Banner.findById(id);
+  const banner = await Banner.findById(id).populate("product", "_id title slug");
 
   if (!banner) return errorRes(res, 404, "Banner does not exist.");
 

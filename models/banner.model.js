@@ -21,6 +21,11 @@ const bannerSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+    product: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Product",
+      default: null,
+    },
     slug: {
       type: String,
       unique: true,
