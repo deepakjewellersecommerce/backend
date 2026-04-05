@@ -17,6 +17,7 @@ const catchAsync = require("../utility/catch-async");
 const ProductVariant = require("../models/product_varient");
 const { buildPaginatedSortedFilteredQuery } = require("../utility/mogoose");
 const { addProductUpdateNotification } = require("./notification.controller");
+const { startOfDayIST, endOfDayIST } = require("../utility/date");
 require("dotenv").config();
 
 const HIGH_VALUE_THRESHOLD = 200000; // ₹2,00,000 — must match pan.controller.js
@@ -100,11 +101,11 @@ module.exports.getAllOrders_get = catchAsync(async (req, res) => {
     filter.order_status = order_status;
   }
 
-  // ── Date range on createdAt ──
+  // ── Date range on createdAt (IST aware) ──
   if (startDate || endDate) {
     filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
-    if (endDate) filter.createdAt.$lte = new Date(`${endDate}T23:59:59.999Z`);
+    if (startDate) filter.createdAt.$gte = startOfDayIST(startDate);
+    if (endDate) filter.createdAt.$lte = endOfDayIST(endDate);
   }
 
   // ── Search: shippingAddress fields + buyer lookup ──
@@ -126,23 +127,101 @@ module.exports.getAllOrders_get = catchAsync(async (req, res) => {
     ];
   }
 
-  const orders = await buildPaginatedSortedFilteredQuery(
-    User_Order.find(filter)
-      .sort("-createdAt")
-      .populate([
-        { path: "buyer" },
-        { path: "products.product" },
-        { path: "products.variant" },
-        {
-          path: "coupon_applied",
-          select: "_id code condition min_price discount_percent is_active",
-        },
-      ]),
-    req,
-    User_Order
-  );
+  // ── Unified Metrics Aggregation ──
+  // We use $facet to get both the list and the summary metrics in a single query
+  // This ensures perfect synchronization between the cards and the table.
+  const page = Number(req.query.page) || 1;
+  const limit = Math.min(Number(req.query.limit) || 10, 100);
+  const skip = (page - 1) * limit;
 
-  successRes(res, orders);
+  const aggregation = await User_Order.aggregate([
+    { $match: filter },
+    {
+      $facet: {
+        // Branch 1: The Paginated Data
+        metadata: [{ $count: "total" }],
+        metrics: [
+          {
+            $group: {
+              _id: null,
+              totalOrders: { $sum: 1 },
+              completedOrders: {
+                $sum: { $cond: [{ $eq: ["$order_status", "DELIVERED"] }, 1, 0] },
+              },
+              totalRevenue: { $sum: "$grandTotal" },
+              // Repeat users: Count users who have more than 1 order in this filter
+              // (Note: This is relative to the current filter)
+              buyerIds: { $push: "$buyer" },
+            },
+          },
+        ],
+        data: [
+          { $sort: { createdAt: -1 } },
+          { $skip: skip },
+          { $limit: limit },
+          // Manual population simulation since we are in aggregate
+          {
+            $lookup: {
+              from: "users",
+              localField: "buyer",
+              foreignField: "_id",
+              as: "buyer",
+            },
+          },
+          { $unwind: { path: "$buyer", preserveNullAndEmptyArrays: true } },
+          {
+            $lookup: {
+              from: "coupons",
+              localField: "coupon_applied",
+              foreignField: "_id",
+              as: "coupon_applied",
+            },
+          },
+          {
+            $unwind: {
+              path: "$coupon_applied",
+              preserveNullAndEmptyArrays: true,
+            },
+          },
+        ],
+      },
+    },
+  ]);
+
+  const result = aggregation[0];
+  const total = result.metadata[0]?.total || 0;
+  const metrics = result.metrics[0] || {
+    totalOrders: 0,
+    completedOrders: 0,
+    totalRevenue: 0,
+    buyerIds: [],
+  };
+
+  // Calculate Average Order Value
+  const avgOrderValue = total > 0 ? metrics.totalRevenue / total : 0;
+
+  // Calculate Repeat Rate (simplified for dashboard)
+  const uniqueBuyers = new Set(
+    metrics.buyerIds.map((id) => id?.toString())
+  ).size;
+  const repeatRate =
+    total > 0 ? ((total - uniqueBuyers) / total) * 100 : 0;
+
+  const response = {
+    data: result.data,
+    page,
+    limit,
+    total,
+    summary: {
+      totalOrders: metrics.totalOrders,
+      completedOrders: metrics.completedOrders,
+      avgOrderValue: Math.round(avgOrderValue * 100) / 100,
+      repeatRate: Math.round(repeatRate * 10) / 10,
+      totalRevenue: metrics.totalRevenue,
+    },
+  };
+
+  successRes(res, response);
 });
 
 module.exports.userOrderDetails_get = catchAsync(async (req, res) => {

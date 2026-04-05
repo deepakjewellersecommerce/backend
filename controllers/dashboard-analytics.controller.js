@@ -10,6 +10,7 @@ const LoyaltyProgram = mongoose.model("LoyaltyProgram");
 const XLSX = require("xlsx");
 const catchAsync = require("../utility/catch-async");
 const { successRes, errorRes } = require("../utility");
+const { startOfDayIST, endOfDayIST } = require("../utility/date");
 
 /**
  * Revenue by Metal Type (with date range filter)
@@ -24,8 +25,8 @@ module.exports.revenueByMetalType_get = catchAsync(async (req, res) => {
   };
   if (startDate || endDate) {
     match.createdAt = {};
-    if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (startDate) match.createdAt.$gte = startOfDayIST(startDate);
+    if (endDate) match.createdAt.$lte = endOfDayIST(endDate);
   }
 
   // Use items array (has metalType); fall back to products for legacy orders
@@ -75,8 +76,8 @@ module.exports.performanceByItemType_get = catchAsync(async (req, res) => {
   };
   if (startDate || endDate) {
     match.createdAt = {};
-    if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (startDate) match.createdAt.$gte = startOfDayIST(startDate);
+    if (endDate) match.createdAt.$lte = endOfDayIST(endDate);
   }
 
   const data = await User_Order.aggregate([
@@ -227,8 +228,8 @@ module.exports.orderFunnel_get = catchAsync(async (req, res) => {
   const match = {};
   if (startDate || endDate) {
     match.createdAt = {};
-    if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (startDate) match.createdAt.$gte = startOfDayIST(startDate);
+    if (endDate) match.createdAt.$lte = endOfDayIST(endDate);
   }
 
   const funnelStatuses = [
