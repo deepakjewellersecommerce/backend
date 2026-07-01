@@ -2,8 +2,9 @@ const mongoose = require("mongoose");
 const Site_Trending_Product = mongoose.model("Site_Trending_Product");
 const { errorRes, internalServerError, successRes } = require("../utility");
 const {uploadOnCloudinary} = require("../middlewares/Cloudinary");
+const catchAsync = require("../utility/catch-async");
 
-module.exports.addTrendingProduct_post = async (req, res) => {
+module.exports.addTrendingProduct_post = catchAsync(async (req, res) => {
   const { prevImages } = req.body;
   let prevImagesParsed = JSON.parse(prevImages);
   const result = [];
@@ -58,12 +59,12 @@ module.exports.addTrendingProduct_post = async (req, res) => {
   } catch (error) {
     internalServerError(res, error);
   }
-};
+});
 
-module.exports.getAllTrendingProduct_get = (req, res) => {
-  Site_Trending_Product.find()
+module.exports.getAllTrendingProduct_get = catchAsync(async (req, res) => {
+  return Site_Trending_Product.find()
     .then((site_trending_products) =>
       successRes(res, { site_trending_products })
     )
     .catch((err) => internalServerError(res, err));
-};
+});

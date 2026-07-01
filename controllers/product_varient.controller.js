@@ -4,7 +4,7 @@ const productVariation = require("../models/product_varient");
 const { PRICING_MODES } = require("../models/product_varient");
 const catchAsync = require("../utility/catch-async");
 const { errorRes } = require("../utility");
-const AppError = require("../utility/appError");
+const ApiError = require("../utility/ApiError");
 
 // Helper to upload variant image files to Cloudinary
 async function uploadVariantImages(files) {
@@ -112,7 +112,7 @@ module.exports.updateProductVariation = catchAsync(async (req, res, next) => {
     })
     .populate("color");
   if (!variant) {
-    return next(new AppError("No variant found with that ID", 404));
+    return next(new ApiError(404, "No variant found with that ID"));
   }
 
   // Recalculate price if pricing-relevant fields changed
@@ -138,7 +138,7 @@ module.exports.updateProductVariation = catchAsync(async (req, res, next) => {
 module.exports.deleteProductVariation = catchAsync(async (req, res, next) => {
   const variant = await productVariation.findByIdAndDelete(req.params.id);
   if (!variant) {
-    return next(new AppError("No product found with that ID", 404));
+    return next(new ApiError(404, "No product found with that ID"));
   }
   res.status(204).json({
     status: "success",
@@ -177,7 +177,7 @@ module.exports.getProductVariation = catchAsync(async (req, res, next) => {
     .findById(req.params.id)
     .populate("color");
   if (!variant) {
-    return next(new AppError("No product found with that ID", 404));
+    return next(new ApiError(404, "No product found with that ID"));
   }
   res.status(200).json({
     status: "success",
@@ -392,7 +392,7 @@ module.exports.previewVariantPrice = catchAsync(async (req, res, next) => {
 module.exports.customizeVariantPricing = catchAsync(async (req, res, next) => {
   const variant = await productVariation.findById(req.params.id);
   if (!variant) {
-    return next(new AppError("No variant found with that ID", 404));
+    return next(new ApiError(404, "No variant found with that ID"));
   }
 
   await variant.customizePricing();
@@ -411,7 +411,7 @@ module.exports.customizeVariantPricing = catchAsync(async (req, res, next) => {
 module.exports.resetVariantPricing = catchAsync(async (req, res, next) => {
   const variant = await productVariation.findById(req.params.id);
   if (!variant) {
-    return next(new AppError("No variant found with that ID", 404));
+    return next(new ApiError(404, "No variant found with that ID"));
   }
 
   await variant.resetPricing();

@@ -186,73 +186,88 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
 });
 
 const bulkAddProducts = catchAsync(async function (products) {
-  const product = products[0];
-  const colorsPresent = await Product_Color.find();
-  const colorsInVarients = new Set();
+  const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
+  const savedProducts = [];
 
-  Array.from(product.varients).forEach((element) => {
-    colorsInVarients.add(element.color);
-  });
-
-  const colors = Array.from(colorsInVarients);
-
-  const notAvailableColors = colors.filter((color) => {
-    return !colorsPresent.find((e) => e.slug === color);
-  });
-
-  const colorsToInsert = notAvailableColors.map((color) => {
-    return {
-      color_name: String(color).toLocaleLowerCase(),
-      hexcode:
-        namedColors.find((e) =>
-          e.name.toLowerCase().match(new RegExp(`^${color.toLowerCase()}`))
-        )?.hex || "#ffffff",
-      slug: String(color).toUpperCase(),
-    };
-  });
-
-  await Product_Color.insertMany(colorsToInsert);
-
-  const savedProduct = await Product.create(product);
-
-  const newColors = await Product_Color.find();
-
-  const bulkVarients = product.varients.map((variant) => ({
-    productId: savedProduct._id,
-    size: variant.size,
-    price: variant.price,
-    salePrice: variant.salePrice,
-    stock: variant.stock,
-    color: newColors.find((e) => e.slug === variant.color)._id,
-    imageUrls: variant.imageUrls,
-  }));
-
-  await ProductVariant.insertMany(bulkVarients);
-    const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
-    for (const product of products) {
-      // Handle product images
-      if (product.images && Array.isArray(product.images)) {
-        let imageUrls = [];
-        for (const file of product.images) {
-          const url = await uploadOnCloudinary(file);
-          if (url) imageUrls.push(url);
-        }
-        product.productImageUrl = imageUrls;
+  for (const product of products) {
+    // 1. Upload product images to Cloudinary if present
+    if (product.images && Array.isArray(product.images)) {
+      let imageUrls = [];
+      for (const file of product.images) {
+        const url = await uploadOnCloudinary(file);
+        if (url) imageUrls.push(url);
       }
-      // Handle variant images
-      if (product.varients && Array.isArray(product.varients)) {
-        for (const variant of product.varients) {
-          if (variant.images && Array.isArray(variant.images)) {
-            let variantImageUrls = [];
-            for (const file of variant.images) {
-              const url = await uploadOnCloudinary(file);
-              if (url) variantImageUrls.push(url);
-            }
-            variant.imageUrls = variantImageUrls;
+      product.productImageUrl = imageUrls;
+    }
+
+    // 2. Upload variant images to Cloudinary if present
+    if (product.varients && Array.isArray(product.varients)) {
+      for (const variant of product.varients) {
+        if (variant.images && Array.isArray(variant.images)) {
+          let variantImageUrls = [];
+          for (const file of variant.images) {
+            const url = await uploadOnCloudinary(file);
+            if (url) variantImageUrls.push(url);
           }
+          variant.imageUrls = variantImageUrls;
         }
       }
     }
+
+    // 3. Handle colors for this product's variants
+    if (product.varients && Array.isArray(product.varients)) {
+      const colorsPresent = await Product_Color.find();
+      const colorsInVarients = new Set();
+
+      product.varients.forEach((element) => {
+        if (element.color) {
+          colorsInVarients.add(element.color);
+        }
+      });
+
+      const colors = Array.from(colorsInVarients);
+      const notAvailableColors = colors.filter((color) => {
+        return !colorsPresent.find((e) => e.slug === String(color).toUpperCase());
+      });
+
+      if (notAvailableColors.length > 0) {
+        const colorsToInsert = notAvailableColors.map((color) => {
+          return {
+            color_name: String(color).toLowerCase(),
+            hexcode:
+              namedColors.find((e) =>
+                e.name.toLowerCase().match(new RegExp(`^${String(color).toLowerCase()}`))
+              )?.hex || "#ffffff",
+            slug: String(color).toUpperCase(),
+          };
+        });
+
+        await Product_Color.insertMany(colorsToInsert);
+      }
+    }
+
+    // 4. Create the product
+    const savedProduct = await Product.create(product);
+    savedProducts.push(savedProduct);
+
+    // 5. Create variants associated with the product
+    if (product.varients && Array.isArray(product.varients)) {
+      const newColors = await Product_Color.find();
+      const bulkVarients = product.varients.map((variant) => ({
+        productId: savedProduct._id,
+        size: variant.size,
+        price: variant.price,
+        salePrice: variant.salePrice,
+        stock: variant.stock,
+        color: newColors.find((e) => e.slug === String(variant.color).toUpperCase())?._id,
+        imageUrls: variant.imageUrls,
+      }));
+
+      await ProductVariant.insertMany(bulkVarients);
+    }
+  }
+
+  return savedProducts;
 });
 
 module.exports.uploadProductBulk = catchAsync(async (req, res) => {

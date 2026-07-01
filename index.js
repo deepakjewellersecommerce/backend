@@ -265,15 +265,39 @@ app.all("/", (req, res) => {
   res.status(400).end();
 });
 
+const ApiError = require("./utility/ApiError");
+
 const errorHandler = (err, req, res, _next) => {
-  if (err.name === "UnauthorizedError") {
-    return res.status(401).json({ error: "Unauthorized!" });
+  let error = err;
+
+  if (!(error instanceof ApiError)) {
+    const statusCode = error.statusCode || (error.name === "UnauthorizedError" ? 401 : 500);
+    const message = error.message || "Internal server error";
+    error = new ApiError(statusCode, message, [], err.stack);
   }
-  console.error(err, "Error");
-  return res.status(500).json({ error: "Internal Error!" });
+
+  console.error({
+    message: error.message,
+    statusCode: error.statusCode,
+    stack: error.stack,
+    url: req.originalUrl,
+    method: req.method,
+    ip: req.ip,
+  });
+
+  const response = {
+    status: error.statusCode < 500 ? "fail" : "error",
+    success: false,
+    message: error.message,
+    ...(error.errors && error.errors.length ? { errors: error.errors } : {}),
+    ...(process.env.NODE_ENV === "development" && { stack: error.stack }),
+  };
+
+  return res.status(error.statusCode).json(response);
 };
 
 app.use(errorHandler);
+
 
 // Export the Express app for Vercel
 module.exports = app;

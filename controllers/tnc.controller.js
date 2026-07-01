@@ -1,16 +1,16 @@
 const textDB = require('../models/tnc.model');
-const asynchandler = require("express-async-handler");
+const catchAsync = require("../utility/catch-async");
 const {
     errorRes,
     internalServerError,
     successRes,
 } = require("../utility/index");
-const test = async (req, res) => {
+const test = catchAsync(async (req, res) => {
     successRes(res, '');
-}
+});
 
 
-const createText = asynchandler(async (req, res) => {
+const createText = catchAsync(async (req, res) => {
     const { name, content } = req.body;
     if (!name || !content) {
         errorRes(res, 400, 'Invalid error ');
@@ -31,7 +31,7 @@ const createText = asynchandler(async (req, res) => {
 
 })
 
-const getAllData = asynchandler(async (req, res) => {
+const getAllData = catchAsync(async (req, res) => {
     const data = await textDB.find({});
     if (data) {
         successRes(res, data);
@@ -40,7 +40,7 @@ const getAllData = asynchandler(async (req, res) => {
         internalServerError(res, "Cannot retrive the datas");
     }
 })
-const getDataByName = asynchandler(async (req, res) => {
+const getDataByName = catchAsync(async (req, res) => {
     const { name } = req.query;
     if (!name) {
         errorRes(res, 400, "Invalid query format");
@@ -56,7 +56,7 @@ const getDataByName = asynchandler(async (req, res) => {
 
 })
 
-const editData = asynchandler(async (req, res) => {
+const editData = catchAsync(async (req, res) => {
     const { id } = req.params;
     if (!id) {
         return errorRes(res, 400, 'Invalid parameter format');
@@ -80,7 +80,7 @@ const editData = asynchandler(async (req, res) => {
         errorRes(res, 404, 'Cannot found the data');
     }
 })
-const deleteData = asynchandler(async (req, res) => {
+const deleteData = catchAsync(async (req, res) => {
     const { id } = req.params;
     if (!id) {
         return errorRes(res, 400, 'Invalid parameter format');

@@ -3,7 +3,6 @@ const User_Cart = mongoose.model("User_Cart");
 const User_WishlistDB = require("../models/wishlist.Model");
 const Product = mongoose.model("Product");
 const catchAsync = require("../utility/catch-async");
-const ErrorHandler = require("../utility/error-handler");
 const {
   errorRes,
   internalServerError,

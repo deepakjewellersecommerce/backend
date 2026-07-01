@@ -2,9 +2,10 @@ const mongoose = require("mongoose");
 const Site_Banner = mongoose.model("Site_Banner");
 const { errorRes, internalServerError, successRes } = require("../utility");
 const { uploadOnCloudinary, deleteFromCloudinary } = require("../middlewares/Cloudinary");
+const catchAsync = require("../utility/catch-async");
 
 
-module.exports.addBanner_post = async (req, res) => {
+module.exports.addBanner_post = catchAsync(async (req, res) => {
   const { banners, content, title } = req.body;
   const result = [];
   if (!req?.files) return errorRes(res, 400, " Banner Image is required.");
@@ -38,15 +39,15 @@ module.exports.addBanner_post = async (req, res) => {
   } catch (error) {
     internalServerError(res, error);
   }
-};
+});
 
-module.exports.getAllBanners_get = (req, res) => {
-  Site_Banner.find()
+module.exports.getAllBanners_get = catchAsync(async (req, res) => {
+  return Site_Banner.find()
     .then((banners) => successRes(res, { banners }))
     .catch((err) => internalServerError(res, err));
-};
+});
 
-module.exports.deleteBanner = async (req, res) => {
+module.exports.deleteBanner = catchAsync(async (req, res) => {
   const id = req.params.id;
   if (!id) {
     errorRes(res, 400, "Please fill in the parameter");
@@ -66,5 +67,4 @@ module.exports.deleteBanner = async (req, res) => {
   else {
     errorRes(res, 404, "Banner not found");
   }
-
-}
+});
