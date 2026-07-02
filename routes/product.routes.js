@@ -42,6 +42,7 @@ router.put(
   "/admin/product/:productId/edit",
   requireAdminLogin,
   validateObjectId('productId'),
+  upload.array("images", 5),
   productController.editProduct_post
 );
 

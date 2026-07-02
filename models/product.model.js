@@ -230,18 +230,19 @@ const productSchema = new mongoose.Schema(
       required: [true, "Metal type is required"]
     },
 
-    // Weights
+    // Weights (optional at product level — authoritative weights live on variants)
     grossWeight: {
       type: Number,
-      required: [true, "Gross weight is required"],
+      default: 0,
       min: [0, "Gross weight cannot be negative"]
     },
     netWeight: {
       type: Number,
-      required: [true, "Net weight is required"],
+      default: 0,
       min: [0, "Net weight cannot be negative"],
       validate: {
         validator: function (v) {
+          if (!v || !this.grossWeight) return true; // skip when either is absent
           return v <= this.grossWeight;
         },
         message: "Net weight cannot exceed gross weight"

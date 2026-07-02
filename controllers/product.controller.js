@@ -113,7 +113,7 @@ module.exports.addProduct_post = catchAsync(async (req, res) => {
   let imageUrls = [];
   let cloudinaryPublicIds = [];
   for (const file of files) {
-    const data = await uploadOnCloudinary(file.path);
+    const data = await uploadOnCloudinary(file);
     if (data && data.secure_url) {
       imageUrls.push(data.secure_url);
       cloudinaryPublicIds.push(data.public_id);
@@ -294,9 +294,45 @@ module.exports.editProduct_post = catchAsync(async (req, res) => {
   if (!mongoose.isValidObjectId(productId)) {
     return errorRes(res, 400, "Invalid product id");
   }
-  const { product: productData } = req.body;
+
+  let productData;
+  if (req.body.product) {
+    try {
+      productData = JSON.parse(req.body.product);
+    } catch (err) {
+      return errorRes(res, 400, "Invalid product data JSON.");
+    }
+  } else {
+    productData = req.body;
+  }
 
   if (!productData) return errorRes(res, 400, "Product details are required.");
+
+  // productImageUrl arrives as a JSON-stringified array when sent via FormData
+  if (typeof productData.productImageUrl === "string") {
+    try {
+      productData.productImageUrl = JSON.parse(productData.productImageUrl);
+    } catch (err) {
+      productData.productImageUrl = [productData.productImageUrl];
+    }
+  }
+
+  // Handle newly uploaded images — append to any existing URLs kept by the client
+  const files = req.files || [];
+  if (files.length > 0) {
+    const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
+    const uploadedUrls = [];
+    for (const file of files) {
+      const data = await uploadOnCloudinary(file);
+      if (data && data.secure_url) {
+        uploadedUrls.push(data.secure_url);
+      }
+    }
+    const existingUrls = Array.isArray(productData.productImageUrl)
+      ? productData.productImageUrl
+      : [];
+    productData.productImageUrl = [...existingUrls, ...uploadedUrls];
+  }
 
   if (productData.productSlug) {
     const findSlug = await Product.findOne({

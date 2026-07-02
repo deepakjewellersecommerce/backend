@@ -196,7 +196,7 @@ productVariantSchema.methods.calculatePrice = async function () {
   const { MetalPrice } = require("./metal-price.model");
   const SubcategoryPricing = require("./subcategory-pricing.model");
   const Subcategory = require("./subcategory.model");
-  const Product = require("./product.model");
+  const { Product } = require("./product.model");
 
   // Get the parent product to access metalType
   const product = await Product.findById(this.productId).populate("subcategoryId");
@@ -285,7 +285,7 @@ productVariantSchema.methods.customizePricing = async function () {
     return this; // Already customized
   }
 
-  const Product = require("./product.model");
+  const { Product } = require("./product.model");
   const Subcategory = require("./subcategory.model");
 
   const product = await Product.findById(this.productId).populate("subcategoryId");
@@ -355,7 +355,7 @@ productVariantSchema.methods.resetPricing = async function () {
  * Static: Bulk recalculate prices for variants by metal type
  */
 productVariantSchema.statics.bulkRecalculate = async function (metalType, options = {}) {
-  const Product = require("./product.model");
+  const { Product } = require("./product.model");
   const { batchSize = 100, onProgress } = options;
 
   const results = {

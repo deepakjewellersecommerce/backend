@@ -885,7 +885,6 @@ module.exports.updateCategory = catchAsync(async (req, res) => {
 module.exports.deleteCategory = catchAsync(async (req, res) => {
   const mongoose = require("mongoose");
   const { id } = req.params;
-  const { force = false } = req.query;
 
   const category = await Category.findById(id);
   if (!category) {
@@ -897,11 +896,11 @@ module.exports.deleteCategory = catchAsync(async (req, res) => {
   // Check for direct products
   const productsCount = await Product.countDocuments({ categoryId: id });
 
-  if ((subcategoriesCount > 0 || productsCount > 0) && force !== "true") {
+  if (subcategoriesCount > 0 || productsCount > 0) {
     return errorRes(
       res,
       400,
-      `Cannot delete category. It has ${subcategoriesCount} subcategories and ${productsCount} products. Use force=true to cascade delete everything.`
+      `Cannot delete '${category.name}': it has ${subcategoriesCount} subcategories and ${productsCount} products. Delete all products and subcategories first.`
     );
   }
 
@@ -909,36 +908,6 @@ module.exports.deleteCategory = catchAsync(async (req, res) => {
   session.startTransaction();
 
   try {
-    const ProductVariant = require("../models/product_varient");
-    const { RfidTag } = require("../models/rfid-tag.model");
-    const Inventory = require("../models/inventory.model");
-    const SubcategoryPricing = require("../models/subcategory-pricing.model");
-
-    if (force === "true") {
-      // Find all products under this category
-      const productIds = await Product.find({ categoryId: id }).distinct("_id").session(session);
-
-      if (productIds.length > 0) {
-        // Cascade delete all product-related data
-        await Promise.all([
-          ProductVariant.deleteMany({ productId: { $in: productIds } }).session(session),
-          RfidTag.deleteMany({ product: { $in: productIds } }).session(session),
-          Inventory.deleteMany({ product: { $in: productIds } }).session(session),
-        ]);
-        // Delete products
-        await Product.deleteMany({ categoryId: id }).session(session);
-      }
-
-      // Delete subcategory pricing configs
-      const subcategoryIds = await Subcategory.find({ categoryId: id }).distinct("_id").session(session);
-      if (subcategoryIds.length > 0) {
-        await SubcategoryPricing.deleteMany({ subcategoryId: { $in: subcategoryIds } }).session(session);
-      }
-
-      // Delete all subcategories
-      await Subcategory.deleteMany({ categoryId: id }).session(session);
-    }
-
     // Delete the category itself
     await Category.findByIdAndDelete(id).session(session);
 
@@ -953,14 +922,14 @@ module.exports.deleteCategory = catchAsync(async (req, res) => {
       actorName: req.admin?.name || "Admin",
       summary: `Deleted category "${category.name}" (${category.fullCategoryId || category.idAttribute})`,
       changes: { before: { name: category.name, idAttribute: category.idAttribute } },
-      metadata: { force: force === "true", subcategoriesDeleted: subcategoriesCount, productsDeleted: productsCount }
+      metadata: { subcategoriesDeleted: 0, productsDeleted: 0 }
     });
 
     successRes(res, {
       message: "Category deleted successfully",
       deleted: {
-        subcategories: force === "true" ? subcategoriesCount : 0,
-        products: force === "true" ? productsCount : 0,
+        subcategories: 0,
+        products: 0,
       },
     });
   } catch (error) {
@@ -1322,4 +1291,39 @@ module.exports.quickCreate = catchAsync(async (req, res) => {
     }
     internalServerError(res, error.message);
   }
+});
+
+/**
+ * Suggest idAttribute for a category based on name
+ * GET /api/admin/categories/suggest-id-attribute?name=Temple&itemId=xxx
+ */
+module.exports.suggestCategoryIdAttribute = catchAsync(async (req, res) => {
+  const { name, itemId } = req.query;
+  if (!name) return errorRes(res, 400, "name is required");
+
+  const base = name.toUpperCase().replace(/[AEIOU\s]/g, '').substring(0, 2);
+  const generated = base.length >= 2 ? base : name.substring(0, 2).toUpperCase();
+
+  const query = { idAttribute: generated };
+  if (itemId) query.itemId = itemId;
+
+  const existing = await Category.findOne(query);
+  if (!existing) {
+    return res.json({ success: true, data: { suggested: generated } });
+  }
+
+  let suffix = 1;
+  while (suffix <= 99) {
+    const candidate = generated + suffix;
+    const conflict = await Category.findOne({
+      idAttribute: candidate,
+      ...(itemId ? { itemId } : {})
+    });
+    if (!conflict) {
+      return res.json({ success: true, data: { suggested: candidate } });
+    }
+    suffix++;
+  }
+
+  return res.json({ success: true, data: { suggested: generated } });
 });

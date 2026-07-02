@@ -33,6 +33,13 @@ router.get(
   subcategoryController.checkAvailability
 );
 
+// Suggest idAttribute based on name
+router.get(
+  "/admin/subcategories/suggest-id-attribute",
+  requireAdminLogin,
+  subcategoryController.suggestIdAttribute
+);
+
 // ==================== CRUD OPERATIONS ====================
 
 // Get all subcategories (flat list)

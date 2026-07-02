@@ -218,7 +218,7 @@ module.exports.getAllSubcategories = catchAsync(async (req, res) => {
     const [subcategories, total] = await Promise.all([
       Subcategory.find(query)
         .populate("categoryId", "name fullCategoryId")
-        .populate("materialId", "name idAttribute metalType")
+        .populate("materialId", "name idAttribute metalType pricePerGram priceOverride")
         .populate("parentSubcategoryId", "name idAttribute")
         .sort({ level: 1, sortOrder: 1, name: 1 })
         .skip(parseInt(offset))
@@ -275,7 +275,7 @@ module.exports.getSubcategory = catchAsync(async (req, res) => {
 
     const subcategory = await Subcategory.findById(id)
       .populate("categoryId", "name fullCategoryId")
-      .populate("materialId", "name idAttribute metalType")
+      .populate("materialId", "name idAttribute metalType pricePerGram priceOverride")
       .populate("genderId", "name idAttribute")
       .populate("itemId", "name idAttribute")
       .populate("parentSubcategoryId", "name idAttribute level")
@@ -404,7 +404,6 @@ module.exports.updateSubcategory = catchAsync(async (req, res) => {
  */
 module.exports.deleteSubcategory = catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { force = false } = req.query;
 
   const subcategory = await Subcategory.findById(id);
   if (!subcategory) {
@@ -419,11 +418,11 @@ module.exports.deleteSubcategory = catchAsync(async (req, res) => {
   // Check for products (direct + descendant)
   const productsCount = await Product.countDocuments({ subcategoryId: id });
 
-  if ((childrenCount > 0 || productsCount > 0) && force !== "true") {
+  if (childrenCount > 0 || productsCount > 0) {
     return errorRes(
       res,
       400,
-      `Cannot delete subcategory. It has ${childrenCount} nested subcategories and ${productsCount} products. Use force=true to cascade delete everything.`
+      `Cannot delete '${subcategory.name}': it has ${childrenCount} nested subcategories and ${productsCount} products. Delete all products and subcategories first.`
     );
   }
 
@@ -431,45 +430,6 @@ module.exports.deleteSubcategory = catchAsync(async (req, res) => {
   session.startTransaction();
 
   try {
-    const ProductVariant = require("../models/product_varient");
-    const { RfidTag } = require("../models/rfid-tag.model");
-    const Inventory = require("../models/inventory.model");
-
-    if (force === "true") {
-      // Collect all subcategory IDs to delete (this one + descendants)
-      const descendantSubs = await Subcategory.find({ ancestorPath: id }).distinct("_id").session(session);
-      const allSubIds = [id, ...descendantSubs.map(s => s.toString())];
-
-      // Find all products under this subtree
-      const productIds = await Product.find({
-        subcategoryId: { $in: allSubIds }
-      }).distinct("_id").session(session);
-
-      if (productIds.length > 0) {
-        // Cascade delete all product-related data
-        await Promise.all([
-          ProductVariant.deleteMany({ productId: { $in: productIds } }).session(session),
-          RfidTag.deleteMany({ product: { $in: productIds } }).session(session),
-          Inventory.deleteMany({ product: { $in: productIds } }).session(session),
-        ]);
-        // Delete products
-        await Product.deleteMany({ subcategoryId: { $in: allSubIds } }).session(session);
-      }
-
-      // Delete pricing configs for all affected subcategories
-      const pricingIds = await Subcategory.find({
-        _id: { $in: allSubIds },
-        pricingConfigId: { $ne: null }
-      }).distinct("pricingConfigId").session(session);
-
-      if (pricingIds.length > 0) {
-        await SubcategoryPricing.deleteMany({ _id: { $in: pricingIds } }).session(session);
-      }
-
-      // Delete descendant subcategories
-      await Subcategory.deleteMany({ ancestorPath: id }).session(session);
-    }
-
     // Delete pricing config for this subcategory
     if (subcategory.pricingConfigId) {
       await SubcategoryPricing.findByIdAndDelete(subcategory.pricingConfigId).session(session);
@@ -483,8 +443,8 @@ module.exports.deleteSubcategory = catchAsync(async (req, res) => {
 
     successRes(res, {
       message: "Subcategory deleted successfully",
-      deletedDescendants: force === "true" ? childrenCount : 0,
-      deletedProducts: force === "true" ? productsCount : 0,
+      deletedDescendants: 0,
+      deletedProducts: 0,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -1091,4 +1051,39 @@ module.exports.getDescendants = catchAsync(async (req, res) => {
     console.error("Error getting descendants:", error);
     internalServerError(res, error.message);
   }
+});
+
+/**
+ * Suggest idAttribute for a subcategory based on name
+ * GET /api/admin/subcategories/suggest-id-attribute?name=Temple&parentCategoryId=xxx
+ */
+module.exports.suggestIdAttribute = catchAsync(async (req, res) => {
+  const { name, parentCategoryId } = req.query;
+  if (!name) return errorRes(res, 400, "name is required");
+
+  const base = name.toUpperCase().replace(/[AEIOU\s]/g, '').substring(0, 2);
+  const generated = base.length >= 2 ? base : name.substring(0, 2).toUpperCase();
+
+  const query = { idAttribute: generated };
+  if (parentCategoryId) query.categoryId = parentCategoryId;
+
+  const existing = await Subcategory.findOne(query);
+  if (!existing) {
+    return res.json({ success: true, data: { suggested: generated } });
+  }
+
+  let suffix = 1;
+  while (suffix <= 99) {
+    const candidate = generated + suffix;
+    const conflict = await Subcategory.findOne({
+      idAttribute: candidate,
+      ...(parentCategoryId ? { categoryId: parentCategoryId } : {})
+    });
+    if (!conflict) {
+      return res.json({ success: true, data: { suggested: candidate } });
+    }
+    suffix++;
+  }
+
+  return res.json({ success: true, data: { suggested: generated } });
 });

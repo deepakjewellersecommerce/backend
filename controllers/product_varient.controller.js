@@ -11,7 +11,7 @@ async function uploadVariantImages(files) {
   const { uploadOnCloudinary } = require("../middlewares/Cloudinary");
   const urls = [];
   for (const file of files) {
-    const data = await uploadOnCloudinary(file.path);
+    const data = await uploadOnCloudinary(file);
     if (data && data.secure_url) {
       urls.push(data.secure_url);
     }

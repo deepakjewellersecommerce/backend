@@ -230,6 +230,12 @@ router.delete(
 // ==================== CATEGORIES (Level 4) ====================
 
 router.get(
+  "/admin/categories/suggest-id-attribute",
+  requireAdminLogin,
+  categoryHierarchyController.suggestCategoryIdAttribute
+);
+
+router.get(
   "/admin/categories/categories",
   requireAdminLogin,
   categoryHierarchyController.getAllCategories
